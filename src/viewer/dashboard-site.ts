@@ -1709,7 +1709,7 @@ async function readProblemListEntries(problemsDir: string): Promise<ProblemListE
     });
   }
 
-  return results.sort((left, right) => right.problemId - left.problemId);
+  return results.sort((left, right) => left.problemId - right.problemId);
 }
 
 function buildProblemTagNames(meta: ProblemBackupMeta | null): string[] {

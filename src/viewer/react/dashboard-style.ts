@@ -205,16 +205,6 @@ export const DASHBOARD_STYLE = `
     padding-top: 14px;
     border-top: 1px solid #ececec;
   }
-  .dashboard-pipeline-runtime {
-    margin-top: 20px;
-    padding-top: 18px;
-    border-top: 1px solid #e6e6e6;
-  }
-  .dashboard-inline-section-title {
-    margin: 0 0 14px;
-    font-size: 16px;
-    color: var(--boj-text-main);
-  }
   .dashboard-pipeline-connector {
     position: relative;
     width: 2px;
@@ -398,6 +388,15 @@ export const DASHBOARD_STYLE = `
     margin: 12px 0 6px;
     font-size: 22px;
     color: var(--boj-text-main);
+  }
+  .dashboard-foldout-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .dashboard-foldout-toggle {
+    white-space: nowrap;
   }
   .dashboard-task-meta {
     margin-bottom: 12px;

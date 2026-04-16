@@ -158,7 +158,7 @@ npx tsx src/index.ts archive
 이 명령은:
 
 1. 기존 `profile.json` 을 읽고
-2. 프로필의 문제 목록을 먼저 확정하고
+2. 프로필의 문제 목록을 먼저 확정한 뒤 문제 번호 오름차순으로 정렬하고, 이미 백업되지 않은 문제를 고른 다음
 3. 각 문제마다 제출 내역을 수집한 뒤 바로 문제 페이지와 제출 코드를 백업합니다
 4. 이 과정에서 전체 `submissions.json` 도 같이 갱신합니다
 
@@ -177,7 +177,7 @@ npx tsx src/index.ts archive --no-resume
 npx tsx src/index.ts archive --overwrite
 ```
 
-- `--problem-limit 20`: 앞에서부터 20문제만 백업
+- `--problem-limit 20`: 이미 백업되지 않은 문제 기준으로 문제 번호 오름차순 20문제만 추가 백업
 - `--no-resume`: 기존 체크포인트 무시
 - `--overwrite`: 이미 저장된 문제도 다시 다운로드
 

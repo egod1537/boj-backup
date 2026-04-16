@@ -50,6 +50,7 @@ interface DashboardAppState {
   expandedStageKey: PipelineStageModel["key"] | null;
   pendingActionKey: string | null;
   resumePendingKey: string | null;
+  logsExpanded: boolean;
 }
 
 export class DashboardApp extends Component<DashboardAppProps, DashboardAppState> {
@@ -63,6 +64,7 @@ export class DashboardApp extends Component<DashboardAppProps, DashboardAppState
       expandedStageKey: resolveDefaultExpandedStage(initialPipelineStages),
       pendingActionKey: null,
       resumePendingKey: null,
+      logsExpanded: false,
     };
   }
 
@@ -139,8 +141,14 @@ export class DashboardApp extends Component<DashboardAppProps, DashboardAppState
     }
   };
 
+  private readonly handleLogsToggle = (): void => {
+    this.setState((previousState) => ({
+      logsExpanded: !previousState.logsExpanded,
+    }));
+  };
+
   public render(): JSX.Element {
-    const { dashboardState, expandedStageKey, pendingActionKey, resumePendingKey } = this.state;
+    const { dashboardState, expandedStageKey, pendingActionKey, resumePendingKey, logsExpanded } = this.state;
     const running = !!(
       dashboardState.task &&
       (dashboardState.task.status === "running" || dashboardState.task.status === "stopping")
@@ -226,80 +234,98 @@ export class DashboardApp extends Component<DashboardAppProps, DashboardAppState
                       </PipelineStageCard>
                     ))}
                   </div>
-                  <div className="dashboard-pipeline-runtime">
-                    <h4 className="dashboard-inline-section-title">현재 작업</h4>
-                    {dashboardState.task ? (
-                      <>
-                        <div className="clearfix">
-                          <span className={`dashboard-status-badge ${taskStatus?.className ?? "idle"}`}>
-                            {taskStatus?.label ?? "대기"}
-                          </span>
-                          {dashboardState.task.status === "running" || dashboardState.task.status === "stopping" ? (
-                            <div className="pull-right dashboard-task-controls">
-                              <button
-                                type="button"
-                                className="btn btn-default btn-xs"
-                                disabled={dashboardState.task.status === "stopping"}
-                                onClick={() => void this.handleStopCurrentTask()}
-                              >
-                                중지 요청
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                        <h3 className="dashboard-task-title">{dashboardState.task.title}</h3>
-                        <p className="dashboard-task-meta">
-                          시작: {dashboardState.task.startedAt}
-                          {dashboardState.task.finishedAt ? ` · 종료: ${dashboardState.task.finishedAt}` : ""}
-                        </p>
-                        {dashboardState.task.summary ? <div className="alert alert-info">{dashboardState.task.summary}</div> : null}
-                        {taskVisualization ? <TaskVisualization model={taskVisualization} /> : null}
-                        {problemCrawlProgress ? <ProblemCrawlProgressCard model={problemCrawlProgress} /> : null}
-                        {!problemCrawlProgress && taskProgress ? (
-                          <div className="dashboard-progress">
-                            <div className="dashboard-progress-meta">
-                              <span>진행률</span>
-                              <span>{taskProgress.label}</span>
-                            </div>
-                            <div className="progress progress-u">
-                              <div
-                                className="progress-bar progress-bar-u"
-                                role="progressbar"
-                                style={{ width: `${taskProgress.percent.toFixed(1)}%` }}
-                              />
-                            </div>
-                          </div>
-                        ) : null}
-                        <div className="table-responsive">
-                          <table className="table table-striped dashboard-status-table">
-                            <tbody>
-                              {renderStatusRows(dashboardState.task.statusLines)}
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="dashboard-empty">아직 실행된 작업이 없습니다.</p>
-                    )}
-                  </div>
                 </div>
               </div>
             </div>
 
             <div className="col-md-6">
-              <div className="panel panel-default dashboard-section-gap" id="log-panel-anchor">
-                <div className="panel-heading"><h3 className="panel-title">최근 로그</h3></div>
-                <div className="panel-body dashboard-log-panel">
-                  {dashboardState.task && dashboardState.task.logs.length > 0 ? (
-                    <ul className="list-group dashboard-log-list">
-                      {dashboardState.task.logs.map((line, index) => (
-                        <li key={`${index}-${line}`} className="list-group-item">{line}</li>
-                      ))}
-                    </ul>
+              <div className="panel panel-default dashboard-section-gap" id="task-panel-anchor">
+                <div className="panel-heading"><h3 className="panel-title">현재 작업</h3></div>
+                <div className="panel-body">
+                  {dashboardState.task ? (
+                    <>
+                      <div className="clearfix">
+                        <span className={`dashboard-status-badge ${taskStatus?.className ?? "idle"}`}>
+                          {taskStatus?.label ?? "대기"}
+                        </span>
+                        {dashboardState.task.status === "running" || dashboardState.task.status === "stopping" ? (
+                          <div className="pull-right dashboard-task-controls">
+                            <button
+                              type="button"
+                              className="btn btn-default btn-xs"
+                              disabled={dashboardState.task.status === "stopping"}
+                              onClick={() => void this.handleStopCurrentTask()}
+                            >
+                              중지 요청
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                      <h3 className="dashboard-task-title">{dashboardState.task.title}</h3>
+                      <p className="dashboard-task-meta">
+                        시작: {dashboardState.task.startedAt}
+                        {dashboardState.task.finishedAt ? ` · 종료: ${dashboardState.task.finishedAt}` : ""}
+                      </p>
+                      {dashboardState.task.summary ? <div className="alert alert-info">{dashboardState.task.summary}</div> : null}
+                      {taskVisualization ? <TaskVisualization model={taskVisualization} /> : null}
+                      {problemCrawlProgress ? <ProblemCrawlProgressCard model={problemCrawlProgress} /> : null}
+                      {!problemCrawlProgress && taskProgress ? (
+                        <div className="dashboard-progress">
+                          <div className="dashboard-progress-meta">
+                            <span>진행률</span>
+                            <span>{taskProgress.label}</span>
+                          </div>
+                          <div className="progress progress-u">
+                            <div
+                              className="progress-bar progress-bar-u"
+                              role="progressbar"
+                              style={{ width: `${taskProgress.percent.toFixed(1)}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="table-responsive">
+                        <table className="table table-striped dashboard-status-table">
+                          <tbody>
+                            {renderStatusRows(dashboardState.task.statusLines)}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   ) : (
-                    <p className="dashboard-empty">로그가 없습니다.</p>
+                    <p className="dashboard-empty">아직 실행된 작업이 없습니다.</p>
                   )}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="row">
+            <div className="col-md-12">
+              <div className="panel panel-default dashboard-section-gap" id="log-panel-anchor">
+                <div className="panel-heading dashboard-foldout-heading">
+                  <h3 className="panel-title">최근 로그</h3>
+                  <button
+                    type="button"
+                    className="btn btn-default btn-xs dashboard-foldout-toggle"
+                    onClick={this.handleLogsToggle}
+                  >
+                    {logsExpanded ? "접기" : "펼치기"}
+                  </button>
+                </div>
+                {logsExpanded ? (
+                  <div className="panel-body dashboard-log-panel">
+                    {dashboardState.task && dashboardState.task.logs.length > 0 ? (
+                      <ul className="list-group dashboard-log-list">
+                        {dashboardState.task.logs.map((line, index) => (
+                          <li key={`${index}-${line}`} className="list-group-item">{line}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="dashboard-empty">로그가 없습니다.</p>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -359,7 +385,7 @@ export class DashboardApp extends Component<DashboardAppProps, DashboardAppState
     return (
       <form className="dashboard-stage-form" onSubmit={this.handleArchiveStart}>
         <div className="dashboard-note-box">
-          프로필의 문제 목록을 먼저 확정한 뒤, 각 문제마다 제출 내역을 수집하고 바로 문제 HTML, 메타데이터, 제출 코드를 저장합니다.
+          프로필에서 문제 목록을 뽑은 뒤 문제 번호 오름차순으로 정렬하고, 각 문제마다 제출 내역을 수집하고 바로 문제 HTML, 메타데이터, 제출 코드를 저장합니다.
           `submissions.json` 도 이 과정에서 같이 갱신됩니다.
         </div>
         <div className="form-group">
@@ -373,7 +399,7 @@ export class DashboardApp extends Component<DashboardAppProps, DashboardAppState
             step="1"
             placeholder="비우면 전체"
           />
-          <p className="dashboard-stage-help">프로필 문제 목록의 앞에서부터 제한합니다.</p>
+          <p className="dashboard-stage-help">이미 백업되지 않은 문제 기준으로 문제 번호 오름차순 최대 N개만 추가합니다.</p>
         </div>
         <div className="checkbox dashboard-stage-checkbox">
           <label>

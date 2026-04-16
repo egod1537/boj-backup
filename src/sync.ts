@@ -383,14 +383,6 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     args.onLog?.("resume 비활성화: 문제+제출코드 백업을 처음부터 다시 시작");
   }
 
-  const problemSelection = selectProblemsFromProfile(profileSnapshot, {
-    problemFilter: args.problemFilter,
-    problemLimit: args.problemLimit,
-  });
-  if (problemSelection.problemIds.length === 0) {
-    throw new ConfigurationError("No problems selected from profile snapshot.");
-  }
-
   const startedAt = syncCheckpoint?.startedAt ?? new Date().toISOString();
   const problemFilter = resolveResumeStringOption(
     syncCheckpoint?.problemFilter,
@@ -402,14 +394,32 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     args.problemLimit,
     "problemLimit",
   );
+
+  const problemSelection = selectProblemsFromProfile(profileSnapshot, {
+    problemFilter,
+  });
+  if (problemSelection.problemIds.length === 0) {
+    throw new ConfigurationError("No problems selected from profile snapshot.");
+  }
+
+  const archiveSelection = await buildArchiveProblemSelection(
+    problemSelection.problemIds,
+    problemsDir,
+    {
+      overwriteProblems: args.overwriteProblems ?? false,
+      problemFilter,
+      problemLimit,
+    },
+  );
   const selectedProblemIds = resolveResumeProblemIds(
     syncCheckpoint?.problemIds,
+    archiveSelection.targetProblemIds,
     problemSelection.problemIds,
   );
   const availableProblemCount =
     syncCheckpoint?.availableProblemCount ?? problemSelection.availableProblems;
   const selectionSummary =
-    syncCheckpoint?.selectionSummary ?? problemSelection.selectionSummary;
+    syncCheckpoint?.selectionSummary ?? archiveSelection.selectionSummary;
   let problemIndex = syncCheckpoint?.problemIndex ?? 0;
   if (problemIndex < 0 || problemIndex > selectedProblemIds.length) {
     problemIndex = 0;
@@ -418,21 +428,24 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
   const existingSubmissionsSnapshot = resume
     ? await readOptionalSubmissionsSnapshot(submissionsPath)
     : null;
-  const reconstructed = await rebuildArchiveRowsFromCompletedProblems(
+  const seededArchiveRows = await rebuildArchiveRowsFromArchivedProblems(
     username,
+    problemSelection.problemIds,
+    problemsDir,
+  );
+  const revalidatedProblemIndex = await resolveArchiveProblemIndex(
     selectedProblemIds,
     problemIndex,
     problemsDir,
-    existingSubmissionsSnapshot,
   );
-  if (reconstructed.problemIndex !== problemIndex) {
+  if (revalidatedProblemIndex !== problemIndex) {
     args.onLog?.(
-      `resume 재검증: ${problemIndex}번째 문제까지 복원하지 못해 ${reconstructed.problemIndex}번째 문제부터 다시 진행`,
+      `resume 재검증: ${problemIndex}번째 문제까지 복원하지 못해 ${revalidatedProblemIndex}번째 문제부터 다시 진행`,
     );
-    problemIndex = reconstructed.problemIndex;
+    problemIndex = revalidatedProblemIndex;
   }
 
-  let aggregateRows = reconstructed.rows;
+  let aggregateRows = seededArchiveRows;
   let pagesFetched =
     existingSubmissionsSnapshot?.pagesFetched ?? 0;
   let completedProblems = problemIndex;
@@ -441,13 +454,7 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
   let totalSourceFiles = aggregateRows.length;
   let savedSourceFiles = aggregateRows.length;
   let skippedSourceFiles = 0;
-  let knownExistingProblems = 0;
-
-  for (const problemId of selectedProblemIds) {
-    if (await isProblemBackupComplete(problemsDir, problemId)) {
-      knownExistingProblems += 1;
-    }
-  }
+  const knownExistingProblems = archiveSelection.knownExistingProblems;
 
   const saveSyncCheckpoint = async () => {
     await writeJsonFile(checkpointPath, {
@@ -485,6 +492,18 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     checkpointPath,
     submissionsCheckpointPath,
   });
+  await writeArchiveSubmissionsSnapshot(
+    submissionsPath,
+    username,
+    problemSelection.problemIds,
+    availableProblemCount,
+    selectionSummary,
+    aggregateRows,
+    pagesFetched,
+  );
+  if (selectedProblemIds.length === 0) {
+    args.onLog?.("추가로 백업할 미백업 문제가 없어 현재 백업 상태만 정리하고 종료");
+  }
 
   while (problemIndex < selectedProblemIds.length) {
     throwIfStopRequested(args.shouldStop);
@@ -494,8 +513,6 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     if (!args.overwriteProblems && (await isProblemBackupComplete(problemsDir, problemId))) {
       const localHistory = await readProblemSubmissionHistory(problemDir);
       if (localHistory) {
-        aggregateRows.push(...localHistory.rows);
-        totalSourceFiles += localHistory.rows.length;
         skippedProblems += 1;
         completedProblems += 1;
         skippedSourceFiles += localHistory.rows.length;
@@ -529,7 +546,7 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
         await writeArchiveSubmissionsSnapshot(
           submissionsPath,
           username,
-          selectedProblemIds,
+          problemSelection.problemIds,
           availableProblemCount,
           selectionSummary,
           aggregateRows,
@@ -610,7 +627,7 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     await writeArchiveSubmissionsSnapshot(
       submissionsPath,
       username,
-      selectedProblemIds,
+      problemSelection.problemIds,
       availableProblemCount,
       selectionSummary,
       aggregateRows,
@@ -932,16 +949,18 @@ function isSubmissionsSnapshot(value: unknown): value is BojUserSubmissionsSnaps
 function resolveResumeProblemIds(
   checkpointProblemIds: number[] | null | undefined,
   selectedProblemIds: number[],
+  availableProblemIds: number[],
 ): number[] {
   if (!checkpointProblemIds) {
     return selectedProblemIds;
   }
 
-  const sameSelection =
-    checkpointProblemIds.length === selectedProblemIds.length &&
-    checkpointProblemIds.every((problemId, index) => problemId === selectedProblemIds[index]);
+  const availableProblemSet = new Set(availableProblemIds);
+  const isValidSelection = checkpointProblemIds.every((problemId) => availableProblemSet.has(problemId));
+  const isAscending =
+    checkpointProblemIds.every((problemId, index) => index === 0 || checkpointProblemIds[index - 1] < problemId);
 
-  if (!sameSelection) {
+  if (!isValidSelection || !isAscending) {
     throw new ConfigurationError(
       "Checkpoint problem selection does not match the current profile selection. Use --no-resume to start over.",
     );
@@ -950,14 +969,30 @@ function resolveResumeProblemIds(
   return checkpointProblemIds;
 }
 
-async function rebuildArchiveRowsFromCompletedProblems(
+async function rebuildArchiveRowsFromArchivedProblems(
   username: string,
+  selectedProblemIds: number[],
+  problemsDir: string,
+): Promise<BojUserSubmissionsSnapshot["rows"]> {
+  const rows: BojUserSubmissionsSnapshot["rows"] = [];
+
+  for (const problemId of selectedProblemIds) {
+    const problemDir = path.join(problemsDir, String(problemId));
+    const history = await readProblemSubmissionHistory(problemDir);
+    if (history && history.username === username) {
+      rows.push(...history.rows);
+    }
+  }
+
+  rows.sort((left, right) => right[0] - left[0]);
+  return rows;
+}
+
+async function resolveArchiveProblemIndex(
   selectedProblemIds: number[],
   requestedProblemIndex: number,
   problemsDir: string,
-  existingSubmissionsSnapshot: BojUserSubmissionsSnapshot | null,
-): Promise<{ rows: BojUserSubmissionsSnapshot["rows"]; problemIndex: number }> {
-  const rows: BojUserSubmissionsSnapshot["rows"] = [];
+): Promise<number> {
   let problemIndex = requestedProblemIndex;
 
   for (let index = 0; index < requestedProblemIndex; index += 1) {
@@ -967,29 +1002,90 @@ async function rebuildArchiveRowsFromCompletedProblems(
       break;
     }
 
-    const problemDir = path.join(problemsDir, String(problemId));
-    const history = await readProblemSubmissionHistory(problemDir);
-    if (history && history.username === username) {
-      rows.push(...history.rows);
-      continue;
+    if (!(await isProblemBackupComplete(problemsDir, problemId))) {
+      problemIndex = index;
+      break;
     }
-
-    const fallbackRows =
-      existingSubmissionsSnapshot?.rows.filter((row) => row[1] === problemId) ?? [];
-    if (fallbackRows.length > 0) {
-      rows.push(...fallbackRows);
-      continue;
-    }
-
-    problemIndex = index;
-    break;
   }
 
-  rows.sort((left, right) => right[0] - left[0]);
+  return problemIndex;
+}
+
+async function buildArchiveProblemSelection(
+  problemIds: number[],
+  problemsDir: string,
+  options: {
+    overwriteProblems: boolean;
+    problemFilter?: string;
+    problemLimit?: number;
+  },
+): Promise<{
+  targetProblemIds: number[];
+  knownExistingProblems: number;
+  selectionSummary: string;
+}> {
+  const targetProblemIds: number[] = [];
+  let knownExistingProblems = 0;
+
+  for (const problemId of problemIds) {
+    const alreadyBackedUp = await isProblemBackupComplete(problemsDir, problemId);
+    if (alreadyBackedUp) {
+      knownExistingProblems += 1;
+    }
+
+    if (!options.overwriteProblems && alreadyBackedUp) {
+      continue;
+    }
+
+    if (options.problemLimit !== undefined && options.problemLimit !== null) {
+      if (targetProblemIds.length >= options.problemLimit) {
+        continue;
+      }
+    }
+
+    targetProblemIds.push(problemId);
+  }
+
   return {
-    rows,
-    problemIndex,
+    targetProblemIds,
+    knownExistingProblems,
+    selectionSummary: buildArchiveSelectionSummary(
+      options.problemFilter,
+      options.problemLimit,
+      options.overwriteProblems,
+    ),
   };
+}
+
+function buildArchiveSelectionSummary(
+  problemFilter: string | undefined,
+  problemLimit: number | undefined,
+  overwriteProblems: boolean,
+): string {
+  const summaryParts: string[] = [];
+  const normalizedFilter = problemFilter?.trim();
+
+  if (normalizedFilter) {
+    summaryParts.push(`문제 번호 ${normalizedFilter}`);
+  }
+
+  if (problemLimit !== undefined && problemLimit !== null) {
+    summaryParts.push(
+      overwriteProblems
+        ? `문제 번호 오름차순 최대 ${problemLimit}문제`
+        : `문제 번호 오름차순 미백업 최대 ${problemLimit}문제`,
+    );
+  } else {
+    summaryParts.push(
+      overwriteProblems ? "문제 번호 오름차순 전체" : "문제 번호 오름차순 미백업 전체",
+    );
+  }
+
+  if (overwriteProblems) {
+    summaryParts.push("overwrite");
+  }
+
+  return summaryParts.join(" · ");
 }
 
 async function writeArchiveSubmissionsSnapshot(

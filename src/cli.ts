@@ -171,7 +171,7 @@ export async function runCli(argv = process.argv): Promise<void> {
   program
     .command("archive")
     .description("프로필 문제 목록을 기준으로 각 문제의 제출/지문/코드를 순서대로 백업합니다.")
-    .option("--problem-limit <count>", "앞에서부터 최대 N개 문제만 백업", parsePositiveInteger)
+    .option("--problem-limit <count>", "이미 백업되지 않은 문제 기준으로 최대 N개 문제만 추가 백업", parsePositiveInteger)
     .option("--no-resume", "이전 체크포인트를 무시하고 처음부터 다시 시작")
     .option("--overwrite", "이미 저장된 문제도 다시 다운로드")
     .addOption(new Option("--handle <id>", "Override username").hideHelp())
