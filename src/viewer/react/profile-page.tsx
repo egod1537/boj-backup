@@ -14,6 +14,7 @@ export function renderProfileInfoReactPage(
   snapshot: BojUserSnapshot,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
   const username = snapshot.profile.username;
   return ViewerDocument({
@@ -27,6 +28,7 @@ export function renderProfileInfoReactPage(
           username={username}
           activeTab="info"
           submissionsSnapshot={submissionsSnapshot}
+          dashboardUrl={dashboardUrl}
         />
         <div className="container content">
           <div className="row">
@@ -34,9 +36,6 @@ export function renderProfileInfoReactPage(
               <div className="page-header profile-header">
                 <ProfileHeader
                   snapshot={snapshot}
-                  activeTab="info"
-                  origin={origin}
-                  submissionsSnapshot={submissionsSnapshot}
                 />
               </div>
             </div>
@@ -69,6 +68,7 @@ export function renderProfileLanguageReactPage(
   snapshot: BojUserSnapshot,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
   const username = snapshot.profile.username;
   return ViewerDocument({
@@ -82,6 +82,7 @@ export function renderProfileLanguageReactPage(
           username={username}
           activeTab="language"
           submissionsSnapshot={submissionsSnapshot}
+          dashboardUrl={dashboardUrl}
         />
         <div className="container content">
           <div className="row">
@@ -89,9 +90,6 @@ export function renderProfileLanguageReactPage(
               <div className="page-header profile-header">
                 <ProfileHeader
                   snapshot={snapshot}
-                  activeTab="language"
-                  origin={origin}
-                  submissionsSnapshot={submissionsSnapshot}
                 />
               </div>
             </div>
@@ -111,6 +109,7 @@ export function renderProfileNotFoundReactPage(
   username: string,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
   const localStatusPath = submissionsSnapshot ? `${origin}/status?user_id=${encodeURIComponent(username)}` : null;
 
@@ -125,6 +124,7 @@ export function renderProfileNotFoundReactPage(
           username={username}
           activeTab="info"
           submissionsSnapshot={submissionsSnapshot}
+          dashboardUrl={dashboardUrl}
         />
         <div className="container content">
           <div className="row">

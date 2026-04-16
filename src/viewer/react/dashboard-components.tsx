@@ -4,49 +4,77 @@ import { PureComponent } from "react";
 import { openArtifactLocation } from "./dashboard-api.js";
 import type { DashboardResumeState } from "../dashboard-types.js";
 import type {
-  ArtifactCardModel,
+  PipelineStageModel,
   ProblemCrawlProgressModel,
   TaskVisualizationModel,
   VisualStep,
 } from "./dashboard-models.js";
 import { iconClassForState } from "./dashboard-models.js";
 
-export class ArtifactCard extends PureComponent<{ card: ArtifactCardModel }> {
+export class PipelineStageCard extends PureComponent<{
+  stage: PipelineStageModel;
+  showConnector: boolean;
+  expanded: boolean;
+  onToggle: (stageKey: PipelineStageModel["key"]) => void;
+  children?: JSX.Element | null;
+}> {
   public render(): JSX.Element {
-    const { card } = this.props;
+    const { stage, showConnector, expanded, onToggle, children } = this.props;
     return (
-      <div className={`dashboard-artifact-card ${card.tone}`}>
-        <div className="dashboard-artifact-head">
-          <h4>{card.title}</h4>
-          <span className={`dashboard-artifact-flag ${card.exists ? "ready" : "empty"}`}>
-            {card.exists ? "READY" : "EMPTY"}
-          </span>
+      <>
+        <div className={`dashboard-pipeline-card ${stage.state} ${expanded ? "expanded" : ""}`}>
+          <div className="dashboard-pipeline-head">
+            <div>
+              <span className="dashboard-pipeline-step-label">{stage.dependency}</span>
+              <h4>{stage.title}</h4>
+            </div>
+            <div className="dashboard-pipeline-head-actions">
+              <span className={`dashboard-pipeline-state ${stage.state}`}>
+                {stage.stateLabel}
+              </span>
+              <button
+                type="button"
+                className="btn btn-default btn-xs dashboard-pipeline-toggle"
+                onClick={() => onToggle(stage.key)}
+              >
+                {expanded ? "접기" : "펼치기"}
+              </button>
+            </div>
+          </div>
+          <div className="dashboard-pipeline-value">{stage.value}</div>
+          <div className="dashboard-pipeline-meta">{stage.note}</div>
+          {expanded ? (
+            <div className="dashboard-pipeline-expanded">
+              {stage.actions.length > 0 ? (
+                <div className="dashboard-link-row">
+                  {stage.actions.map((action) => action.type === "button" ? (
+                    <button
+                      key={action.label}
+                      type="button"
+                      className="btn btn-default btn-xs"
+                      onClick={() => void openArtifactLocation(action.key)}
+                    >
+                      {action.label}
+                    </button>
+                  ) : (
+                    <a
+                      key={action.label}
+                      className={`btn btn-xs ${action.primary ? "dashboard-btn-primary" : "btn-default"}`}
+                      href={action.href}
+                      target={action.external ? "_blank" : undefined}
+                      rel={action.external ? "noreferrer" : undefined}
+                    >
+                      {action.label}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+              {children}
+            </div>
+          ) : null}
         </div>
-        <span className="dashboard-artifact-value">{card.value}</span>
-        <div className="dashboard-artifact-meta">{card.note}</div>
-        <div className="dashboard-link-row">
-          {card.actions.map((action) => action.type === "button" ? (
-            <button
-              key={action.label}
-              type="button"
-              className="btn btn-default btn-xs"
-              onClick={() => void openArtifactLocation(action.key)}
-            >
-              {action.label}
-            </button>
-          ) : (
-            <a
-              key={action.label}
-              className={`btn btn-xs ${action.primary ? "dashboard-btn-primary" : "btn-default"}`}
-              href={action.href}
-              target={action.external ? "_blank" : undefined}
-              rel={action.external ? "noreferrer" : undefined}
-            >
-              {action.label}
-            </a>
-          ))}
-        </div>
-      </div>
+        {showConnector ? <div className="dashboard-pipeline-connector" aria-hidden="true" /> : null}
+      </>
     );
   }
 }
@@ -248,7 +276,7 @@ export class ResumeCheckpointCard extends PureComponent<{
       case "sync":
         return ["프로필", "제출 기록", "문제 백업"];
       case "archive":
-        return ["제출 기록", "문제 백업"];
+        return ["프로필 확인", "문제 아카이브"];
       case "submissions":
         return ["제출 기록"];
     }

@@ -117,6 +117,14 @@ interface ProblemWorkItem {
   rows: BojUserSubmissionRow[];
 }
 
+export interface BackupProblemFromRowsResult {
+  title: string | null;
+  submissionCount: number;
+  totalSourceFiles: number;
+  savedSourceFiles: number;
+  skippedSourceFiles: number;
+}
+
 export interface ProblemSelectionPreview {
   selectedProblemIds: number[];
   availableProblems: number;
@@ -241,10 +249,13 @@ export async function backupProblemsFromSubmissions(args: {
       continue;
     }
 
-    const beforePageRateLimit = args.client.getRateLimitSnapshot();
-    args.onProgress?.({
+    const result = await backupProblemFromRows({
+      client: args.client,
       username: snapshot.username,
       outputDir,
+      problemId: item.problemId,
+      title: item.title,
+      rows: item.rows,
       availableProblems,
       totalProblems: workItems.length,
       selectionSummary,
@@ -252,145 +263,15 @@ export async function backupProblemsFromSubmissions(args: {
       completedProblems,
       savedProblems,
       skippedProblems,
-      phase: "fetch-problem-page",
-      currentProblemId: item.problemId,
-      currentProblemTitle: item.title,
-      currentProblemDir: problemDir,
-      currentSubmissionCount: item.rows.length,
-      currentSubmissionId: null,
-      currentSourceIndex: null,
-      totalSourceFiles: item.rows.length,
       savedSourceFiles,
       skippedSourceFiles,
-      nextDelayMs: beforePageRateLimit.nextDelayMs,
-      delayReason: beforePageRateLimit.delayReason,
-      backoffAttempt: beforePageRateLimit.backoffAttempt,
+      onProgress: args.onProgress,
+      shouldStop: args.shouldStop,
     });
-    const page = await args.client.fetchProblemPage(item.problemId);
-    throwIfStopRequested(args.shouldStop);
 
-    const beforeMetadataRateLimit = args.client.getRateLimitSnapshot();
-    args.onProgress?.({
-      username: snapshot.username,
-      outputDir,
-      availableProblems,
-      totalProblems: workItems.length,
-      selectionSummary,
-      knownExistingProblems: existingProblemIds.size,
-      completedProblems,
-      savedProblems,
-      skippedProblems,
-      phase: "fetch-problem-metadata",
-      currentProblemId: item.problemId,
-      currentProblemTitle: page.title ?? item.title,
-      currentProblemDir: problemDir,
-      currentSubmissionCount: item.rows.length,
-      currentSubmissionId: null,
-      currentSourceIndex: null,
-      totalSourceFiles: item.rows.length,
-      savedSourceFiles,
-      skippedSourceFiles,
-      nextDelayMs: beforeMetadataRateLimit.nextDelayMs,
-      delayReason: beforeMetadataRateLimit.delayReason,
-      backoffAttempt: beforeMetadataRateLimit.backoffAttempt,
-    });
-    const metadata = await args.client.fetchProblemMetadata(item.problemId);
-    throwIfStopRequested(args.shouldStop);
-
-    const sourceEntries: ProblemSourceFileEntry[] = [];
-    const sourcesDir = path.join(problemDir, "sources");
-    await mkdir(sourcesDir, { recursive: true });
-    totalSourceFiles += item.rows.length;
-
-    for (let index = 0; index < item.rows.length; index += 1) {
-      throwIfStopRequested(args.shouldStop);
-      const row = item.rows[index];
-      const submissionId = row[SUBMISSION_ROW_INDEX.submissionId];
-      const language = row[SUBMISSION_ROW_INDEX.language] ?? "";
-      const fileName = buildSubmissionSourceFileName(submissionId, language);
-      const sourcePath = path.join(sourcesDir, fileName);
-      sourceEntries.push({
-        submissionId,
-        fileName,
-        language,
-      });
-
-      const beforeSourceRateLimit = args.client.getRateLimitSnapshot();
-      args.onProgress?.({
-        username: snapshot.username,
-        outputDir,
-        availableProblems,
-        totalProblems: workItems.length,
-        selectionSummary,
-        knownExistingProblems: existingProblemIds.size,
-        completedProblems,
-        savedProblems,
-        skippedProblems,
-        phase: "fetch-submission-sources",
-        currentProblemId: item.problemId,
-        currentProblemTitle: page.title ?? item.title,
-        currentProblemDir: problemDir,
-        currentSubmissionCount: item.rows.length,
-        currentSubmissionId: submissionId,
-        currentSourceIndex: index + 1,
-        totalSourceFiles: item.rows.length,
-        savedSourceFiles,
-        skippedSourceFiles,
-        nextDelayMs: beforeSourceRateLimit.nextDelayMs,
-        delayReason: beforeSourceRateLimit.delayReason,
-        backoffAttempt: beforeSourceRateLimit.backoffAttempt,
-      });
-
-      if (await fileExists(sourcePath)) {
-        skippedSourceFiles += 1;
-        continue;
-      }
-
-      const source = await args.client.fetchSubmissionSource(submissionId);
-      await writeTextFile(sourcePath, buildSourceCodeFileContent(source));
-      sourceEntries[sourceEntries.length - 1] = {
-        submissionId,
-        fileName,
-        language: source.language || language,
-      };
-      savedSourceFiles += 1;
-      throwIfStopRequested(args.shouldStop);
-    }
-
-    const beforeWriteRateLimit = args.client.getRateLimitSnapshot();
-    args.onProgress?.({
-      username: snapshot.username,
-      outputDir,
-      availableProblems,
-      totalProblems: workItems.length,
-      selectionSummary,
-      knownExistingProblems: existingProblemIds.size,
-      completedProblems,
-      savedProblems,
-      skippedProblems,
-      phase: "write-problem-files",
-      currentProblemId: item.problemId,
-      currentProblemTitle: page.title ?? item.title,
-      currentProblemDir: problemDir,
-      currentSubmissionCount: item.rows.length,
-      currentSubmissionId: null,
-      currentSourceIndex: null,
-      totalSourceFiles: item.rows.length,
-      savedSourceFiles,
-      skippedSourceFiles,
-      nextDelayMs: beforeWriteRateLimit.nextDelayMs,
-      delayReason: beforeWriteRateLimit.delayReason,
-      backoffAttempt: beforeWriteRateLimit.backoffAttempt,
-    });
-    await writeProblemBackup(
-      outputDir,
-      snapshot.username,
-      item,
-      page,
-      metadata,
-      sourceEntries,
-    );
-
+    totalSourceFiles += result.totalSourceFiles;
+    savedSourceFiles += result.savedSourceFiles;
+    skippedSourceFiles += result.skippedSourceFiles;
     savedProblems += 1;
     completedProblems += 1;
     const rateLimit = args.client.getRateLimitSnapshot();
@@ -406,12 +287,12 @@ export async function backupProblemsFromSubmissions(args: {
       skippedProblems,
       phase: "problem-complete",
       currentProblemId: item.problemId,
-      currentProblemTitle: page.title ?? item.title,
+      currentProblemTitle: result.title,
       currentProblemDir: problemDir,
-      currentSubmissionCount: item.rows.length,
+      currentSubmissionCount: result.submissionCount,
       currentSubmissionId: null,
-      currentSourceIndex: item.rows.length,
-      totalSourceFiles: item.rows.length,
+      currentSourceIndex: result.totalSourceFiles,
+      totalSourceFiles: result.totalSourceFiles,
       savedSourceFiles,
       skippedSourceFiles,
       nextDelayMs: rateLimit.nextDelayMs,
@@ -429,6 +310,188 @@ export async function backupProblemsFromSubmissions(args: {
     savedProblems,
     skippedProblems,
     totalSourceFiles,
+    savedSourceFiles,
+    skippedSourceFiles,
+  };
+}
+
+export async function backupProblemFromRows(args: {
+  client: BojSessionClient;
+  username: string;
+  outputDir: string;
+  problemId: number;
+  title: string | null;
+  rows: BojUserSubmissionRow[];
+  availableProblems: number;
+  totalProblems: number;
+  selectionSummary: string;
+  knownExistingProblems: number;
+  completedProblems: number;
+  savedProblems: number;
+  skippedProblems: number;
+  savedSourceFiles: number;
+  skippedSourceFiles: number;
+  onProgress?: (progress: ProblemBackupProgress) => void;
+  shouldStop?: () => boolean;
+}): Promise<BackupProblemFromRowsResult> {
+  const item = buildProblemWorkItemFromRows(args.problemId, args.title, args.rows);
+  const problemDir = path.join(path.resolve(args.outputDir), String(item.problemId));
+
+  const beforePageRateLimit = args.client.getRateLimitSnapshot();
+  args.onProgress?.({
+    username: args.username,
+    outputDir: path.resolve(args.outputDir),
+    availableProblems: args.availableProblems,
+    totalProblems: args.totalProblems,
+    selectionSummary: args.selectionSummary,
+    knownExistingProblems: args.knownExistingProblems,
+    completedProblems: args.completedProblems,
+    savedProblems: args.savedProblems,
+    skippedProblems: args.skippedProblems,
+    phase: "fetch-problem-page",
+    currentProblemId: item.problemId,
+    currentProblemTitle: item.title,
+    currentProblemDir: problemDir,
+    currentSubmissionCount: item.rows.length,
+    currentSubmissionId: null,
+    currentSourceIndex: null,
+    totalSourceFiles: item.rows.length,
+    savedSourceFiles: args.savedSourceFiles,
+    skippedSourceFiles: args.skippedSourceFiles,
+    nextDelayMs: beforePageRateLimit.nextDelayMs,
+    delayReason: beforePageRateLimit.delayReason,
+    backoffAttempt: beforePageRateLimit.backoffAttempt,
+  });
+  const page = await args.client.fetchProblemPage(item.problemId);
+  throwIfStopRequested(args.shouldStop);
+
+  const beforeMetadataRateLimit = args.client.getRateLimitSnapshot();
+  args.onProgress?.({
+    username: args.username,
+    outputDir: path.resolve(args.outputDir),
+    availableProblems: args.availableProblems,
+    totalProblems: args.totalProblems,
+    selectionSummary: args.selectionSummary,
+    knownExistingProblems: args.knownExistingProblems,
+    completedProblems: args.completedProblems,
+    savedProblems: args.savedProblems,
+    skippedProblems: args.skippedProblems,
+    phase: "fetch-problem-metadata",
+    currentProblemId: item.problemId,
+    currentProblemTitle: page.title ?? item.title,
+    currentProblemDir: problemDir,
+    currentSubmissionCount: item.rows.length,
+    currentSubmissionId: null,
+    currentSourceIndex: null,
+    totalSourceFiles: item.rows.length,
+    savedSourceFiles: args.savedSourceFiles,
+    skippedSourceFiles: args.skippedSourceFiles,
+    nextDelayMs: beforeMetadataRateLimit.nextDelayMs,
+    delayReason: beforeMetadataRateLimit.delayReason,
+    backoffAttempt: beforeMetadataRateLimit.backoffAttempt,
+  });
+  const metadata = await args.client.fetchProblemMetadata(item.problemId);
+  throwIfStopRequested(args.shouldStop);
+
+  const sourceEntries: ProblemSourceFileEntry[] = [];
+  const sourcesDir = path.join(problemDir, "sources");
+  await mkdir(sourcesDir, { recursive: true });
+  let savedSourceFiles = 0;
+  let skippedSourceFiles = 0;
+
+  for (let index = 0; index < item.rows.length; index += 1) {
+    throwIfStopRequested(args.shouldStop);
+    const row = item.rows[index];
+    const submissionId = row[SUBMISSION_ROW_INDEX.submissionId];
+    const language = row[SUBMISSION_ROW_INDEX.language] ?? "";
+    const fileName = buildSubmissionSourceFileName(submissionId, language);
+    const sourcePath = path.join(sourcesDir, fileName);
+    sourceEntries.push({
+      submissionId,
+      fileName,
+      language,
+    });
+
+    const beforeSourceRateLimit = args.client.getRateLimitSnapshot();
+    args.onProgress?.({
+      username: args.username,
+      outputDir: path.resolve(args.outputDir),
+      availableProblems: args.availableProblems,
+      totalProblems: args.totalProblems,
+      selectionSummary: args.selectionSummary,
+      knownExistingProblems: args.knownExistingProblems,
+      completedProblems: args.completedProblems,
+      savedProblems: args.savedProblems,
+      skippedProblems: args.skippedProblems,
+      phase: "fetch-submission-sources",
+      currentProblemId: item.problemId,
+      currentProblemTitle: page.title ?? item.title,
+      currentProblemDir: problemDir,
+      currentSubmissionCount: item.rows.length,
+      currentSubmissionId: submissionId,
+      currentSourceIndex: index + 1,
+      totalSourceFiles: item.rows.length,
+      savedSourceFiles: args.savedSourceFiles + savedSourceFiles,
+      skippedSourceFiles: args.skippedSourceFiles + skippedSourceFiles,
+      nextDelayMs: beforeSourceRateLimit.nextDelayMs,
+      delayReason: beforeSourceRateLimit.delayReason,
+      backoffAttempt: beforeSourceRateLimit.backoffAttempt,
+    });
+
+    if (await fileExists(sourcePath)) {
+      skippedSourceFiles += 1;
+      continue;
+    }
+
+    const source = await args.client.fetchSubmissionSource(submissionId);
+    await writeTextFile(sourcePath, buildSourceCodeFileContent(source));
+    sourceEntries[sourceEntries.length - 1] = {
+      submissionId,
+      fileName,
+      language: source.language || language,
+    };
+    savedSourceFiles += 1;
+    throwIfStopRequested(args.shouldStop);
+  }
+
+  const beforeWriteRateLimit = args.client.getRateLimitSnapshot();
+  args.onProgress?.({
+    username: args.username,
+    outputDir: path.resolve(args.outputDir),
+    availableProblems: args.availableProblems,
+    totalProblems: args.totalProblems,
+    selectionSummary: args.selectionSummary,
+    knownExistingProblems: args.knownExistingProblems,
+    completedProblems: args.completedProblems,
+    savedProblems: args.savedProblems,
+    skippedProblems: args.skippedProblems,
+    phase: "write-problem-files",
+    currentProblemId: item.problemId,
+    currentProblemTitle: page.title ?? item.title,
+    currentProblemDir: problemDir,
+    currentSubmissionCount: item.rows.length,
+    currentSubmissionId: null,
+    currentSourceIndex: null,
+    totalSourceFiles: item.rows.length,
+    savedSourceFiles: args.savedSourceFiles + savedSourceFiles,
+    skippedSourceFiles: args.skippedSourceFiles + skippedSourceFiles,
+    nextDelayMs: beforeWriteRateLimit.nextDelayMs,
+    delayReason: beforeWriteRateLimit.delayReason,
+    backoffAttempt: beforeWriteRateLimit.backoffAttempt,
+  });
+  await writeProblemBackup(
+    path.resolve(args.outputDir),
+    args.username,
+    item,
+    page,
+    metadata,
+    sourceEntries,
+  );
+
+  return {
+    title: page.title ?? item.title,
+    submissionCount: item.rows.length,
+    totalSourceFiles: item.rows.length,
     savedSourceFiles,
     skippedSourceFiles,
   };
@@ -459,6 +522,20 @@ async function readSubmissionsSnapshot(inputPath: string): Promise<BojUserSubmis
   }
 
   return parsed;
+}
+
+export async function readProblemSubmissionHistory(
+  problemDir: string,
+): Promise<ProblemSubmissionHistorySnapshot | null> {
+  const submissionsPath = path.join(path.resolve(problemDir), "submissions.json");
+
+  try {
+    const raw = await readFile(submissionsPath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return isProblemSubmissionHistorySnapshot(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function isSubmissionsSnapshot(value: unknown): value is BojUserSubmissionsSnapshot {
@@ -616,7 +693,7 @@ function parseProblemFilter(problemFilter: string | undefined): Set<number> | nu
   return values;
 }
 
-async function isProblemBackupComplete(outputDir: string, problemId: number): Promise<boolean> {
+export async function isProblemBackupComplete(outputDir: string, problemId: number): Promise<boolean> {
   const problemDir = path.join(outputDir, String(problemId));
   const htmlPath = path.join(problemDir, "index.html");
   const metaPath = path.join(problemDir, "meta.json");
@@ -666,6 +743,19 @@ async function isProblemBackupComplete(outputDir: string, problemId: number): Pr
     Array.isArray(meta.submissionIds) &&
     sourceFiles.length === meta.submissionIds.length
   );
+}
+
+function buildProblemWorkItemFromRows(
+  problemId: number,
+  title: string | null,
+  rows: BojUserSubmissionRow[],
+): ProblemWorkItem {
+  return {
+    problemId,
+    title,
+    submissionIds: rows.map((row) => row[SUBMISSION_ROW_INDEX.submissionId]),
+    rows: [...rows],
+  };
 }
 
 async function writeProblemBackup(
@@ -900,4 +990,20 @@ async function readProblemBackupMeta(filePath: string): Promise<Record<string, u
   } catch {
     return null;
   }
+}
+
+function isProblemSubmissionHistorySnapshot(value: unknown): value is ProblemSubmissionHistorySnapshot {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const snapshot = value as Partial<ProblemSubmissionHistorySnapshot>;
+  return (
+    snapshot.kind === "boj-problem-submissions" &&
+    snapshot.version === 1 &&
+    typeof snapshot.username === "string" &&
+    typeof snapshot.problemId === "number" &&
+    Array.isArray(snapshot.columns) &&
+    Array.isArray(snapshot.rows)
+  );
 }

@@ -21,9 +21,10 @@ export class ProfileTopChrome extends PureComponent<{
   username: string;
   activeTab: "info" | "language";
   submissionsSnapshot: BojUserSubmissionsSnapshot | null;
+  dashboardUrl?: string | null;
 }> {
   public render(): JSX.Element {
-    const { origin, username, activeTab, submissionsSnapshot } = this.props;
+    const { origin, username, activeTab, submissionsSnapshot, dashboardUrl } = this.props;
     const infoPath = `${origin}/user/${encodeURIComponent(username)}`;
     const languagePath = `${origin}/user/language/${encodeURIComponent(username)}`;
     const statusPath = submissionsSnapshot
@@ -32,19 +33,6 @@ export class ProfileTopChrome extends PureComponent<{
 
     return (
       <div className="header no-print">
-        <div className="topbar">
-          <div className="container">
-            <ul className="loginbar pull-right">
-              <li>
-                <a href="https://www.acmicpc.net/register" target="_blank" rel="noreferrer">회원가입</a>
-              </li>
-              <li className="topbar-devider" />
-              <li>
-                <a href="https://www.acmicpc.net/login" target="_blank" rel="noreferrer">로그인</a>
-              </li>
-            </ul>
-          </div>
-        </div>
         <div className="navbar navbar-default mega-menu viewer-nav" role="navigation">
           <div className="container">
             <div className="navbar-header">
@@ -59,21 +47,23 @@ export class ProfileTopChrome extends PureComponent<{
             </div>
             <div className="collapse navbar-collapse navbar-responsive-collapse">
               <ul className="nav navbar-nav">
-                <li><a href="https://www.acmicpc.net/problemset" target="_blank" rel="noreferrer">문제</a></li>
-                <li><a href="https://www.acmicpc.net/workbook/top" target="_blank" rel="noreferrer">문제집</a></li>
-                <li><a href="https://www.acmicpc.net/contest/official/list" target="_blank" rel="noreferrer">대회</a></li>
-                <li>
-                  <a href={statusPath} target={submissionsSnapshot ? undefined : "_blank"} rel={submissionsSnapshot ? undefined : "noreferrer"}>
-                    채점 현황
-                  </a>
+                <li className={activeTab === "info" ? "active" : undefined}>
+                  <a href={infoPath}>정보</a>
                 </li>
-                <li className="active">
-                  <a href={activeTab === "info" ? infoPath : languagePath}>랭킹</a>
+                <li className={activeTab === "language" ? "active" : undefined}>
+                  <a href={languagePath}>언어</a>
                 </li>
-                <li><a href="https://www.acmicpc.net/board/list/all" target="_blank" rel="noreferrer">게시판</a></li>
-                <li><a href="https://www.acmicpc.net/group/list/all" target="_blank" rel="noreferrer">그룹</a></li>
+                {submissionsSnapshot ? (
+                  <li>
+                    <a href={statusPath}>제출</a>
+                  </li>
+                ) : null}
+                {dashboardUrl ? (
+                  <li>
+                    <a href={dashboardUrl}>대시보드</a>
+                  </li>
+                ) : null}
               </ul>
-              <span className="navbar-text viewer-topbar-note">local profile viewer</span>
             </div>
           </div>
         </div>
@@ -84,16 +74,10 @@ export class ProfileTopChrome extends PureComponent<{
 
 export class ProfileHeader extends PureComponent<{
   snapshot: BojUserSnapshot;
-  activeTab: "info" | "language";
-  origin: string;
-  submissionsSnapshot: BojUserSubmissionsSnapshot | null;
 }> {
   public render(): JSX.Element {
-    const { snapshot, activeTab, origin, submissionsSnapshot } = this.props;
+    const { snapshot } = this.props;
     const username = snapshot.profile.username;
-    const infoPath = `${origin}/user/${encodeURIComponent(username)}`;
-    const languagePath = `${origin}/user/language/${encodeURIComponent(username)}`;
-    const statusPath = submissionsSnapshot ? `${origin}/status?user_id=${encodeURIComponent(username)}` : null;
 
     return (
       <>
@@ -115,13 +99,6 @@ export class ProfileHeader extends PureComponent<{
         </h1>
         <blockquote className="no-mathjax">
           {snapshot.profile.bio ? <span className="profile-bio">{snapshot.profile.bio}</span> : null}
-          <div className="tab-v2 user-menu">
-            <ul className="nav nav-tabs">
-              <li className={activeTab === "info" ? "active" : ""}><a href={infoPath}>정보</a></li>
-              <li className={activeTab === "language" ? "active" : ""}><a href={languagePath}>언어</a></li>
-              {statusPath ? <li><a href={statusPath}>제출</a></li> : null}
-            </ul>
-          </div>
         </blockquote>
       </>
     );

@@ -233,16 +233,18 @@ export function renderProfileInfoPage(
   snapshot: BojUserSnapshot,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
-  return renderProfileInfoReactPage(snapshot, origin, submissionsSnapshot);
+  return renderProfileInfoReactPage(snapshot, origin, submissionsSnapshot, dashboardUrl);
 }
 
 export function renderProfileLanguagePage(
   snapshot: BojUserSnapshot,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
-  return renderProfileLanguageReactPage(snapshot, origin, submissionsSnapshot);
+  return renderProfileLanguageReactPage(snapshot, origin, submissionsSnapshot, dashboardUrl);
 }
 
 function renderShell(args: {
@@ -336,6 +338,7 @@ function renderTopChrome(
   username: string,
   activeTab: "info" | "language",
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
   const infoPath = `${origin}/user/${encodeURIComponent(username)}`;
   const languagePath = `${origin}/user/language/${encodeURIComponent(username)}`;
@@ -345,15 +348,6 @@ function renderTopChrome(
 
   return `
     <div class="header no-print">
-      <div class="topbar">
-        <div class="container">
-          <ul class="loginbar pull-right">
-            <li><a href="https://www.acmicpc.net/register" target="_blank" rel="noreferrer">회원가입</a></li>
-            <li class="topbar-devider"></li>
-            <li><a href="https://www.acmicpc.net/login" target="_blank" rel="noreferrer">로그인</a></li>
-          </ul>
-        </div>
-      </div>
       <div class="navbar navbar-default mega-menu viewer-nav" role="navigation">
         <div class="container">
           <div class="navbar-header">
@@ -363,15 +357,11 @@ function renderTopChrome(
           </div>
           <div class="collapse navbar-collapse navbar-responsive-collapse">
             <ul class="nav navbar-nav">
-              <li><a href="https://www.acmicpc.net/problemset" target="_blank" rel="noreferrer">문제</a></li>
-              <li><a href="https://www.acmicpc.net/workbook/top" target="_blank" rel="noreferrer">문제집</a></li>
-              <li><a href="https://www.acmicpc.net/contest/official/list" target="_blank" rel="noreferrer">대회</a></li>
-              <li><a href="${escapeHtml(statusPath)}"${submissionsSnapshot ? "" : ' target="_blank" rel="noreferrer"'}>채점 현황</a></li>
-              <li class="active"><a href="${escapeHtml(activeTab === "info" ? infoPath : languagePath)}">랭킹</a></li>
-              <li><a href="https://www.acmicpc.net/board/list/all" target="_blank" rel="noreferrer">게시판</a></li>
-              <li><a href="https://www.acmicpc.net/group/list/all" target="_blank" rel="noreferrer">그룹</a></li>
+              <li class="${activeTab === "info" ? "active" : ""}"><a href="${escapeHtml(infoPath)}">정보</a></li>
+              <li class="${activeTab === "language" ? "active" : ""}"><a href="${escapeHtml(languagePath)}">언어</a></li>
+              ${submissionsSnapshot ? `<li><a href="${escapeHtml(statusPath)}">제출</a></li>` : ""}
+              ${dashboardUrl ? `<li><a href="${escapeHtml(dashboardUrl)}">대시보드</a></li>` : ""}
             </ul>
-            <span class="navbar-text viewer-topbar-note">local profile viewer</span>
           </div>
         </div>
       </div>
@@ -381,16 +371,8 @@ function renderTopChrome(
 
 function renderProfileHeader(
   snapshot: BojUserSnapshot,
-  activeTab: "info" | "language",
-  origin: string,
-  submissionsSnapshot: BojUserSubmissionsSnapshot | null,
 ): string {
   const username = snapshot.profile.username;
-  const infoPath = `${origin}/user/${encodeURIComponent(username)}`;
-  const languagePath = `${origin}/user/language/${encodeURIComponent(username)}`;
-  const statusPath = submissionsSnapshot
-    ? `${origin}/status?user_id=${encodeURIComponent(username)}`
-    : null;
   const tierImage = snapshot.profile.tierImageUrl
     ? `<img src="${escapeHtml(snapshot.profile.tierImageUrl)}" class="solvedac-tier">`
     : "";
@@ -406,13 +388,6 @@ function renderProfileHeader(
     </h1>
     <blockquote class="no-mathjax">
       ${bio}
-      <div class="tab-v2 user-menu">
-        <ul class="nav nav-tabs">
-          <li class="${activeTab === "info" ? "active" : ""}"><a href="${escapeHtml(infoPath)}">정보</a></li>
-          <li class="${activeTab === "language" ? "active" : ""}"><a href="${escapeHtml(languagePath)}">언어</a></li>
-          ${statusPath ? `<li><a href="${escapeHtml(statusPath)}">제출</a></li>` : ""}
-        </ul>
-      </div>
     </blockquote>
   `;
 }
@@ -616,8 +591,9 @@ function renderNotFoundPage(
   username: string,
   origin: string,
   submissionsSnapshot: BojUserSubmissionsSnapshot | null,
+  dashboardUrl: string | null = null,
 ): string {
-  return renderProfileNotFoundReactPage(username, origin, submissionsSnapshot);
+  return renderProfileNotFoundReactPage(username, origin, submissionsSnapshot, dashboardUrl);
 }
 
 function formatDateTime(value: string): string {

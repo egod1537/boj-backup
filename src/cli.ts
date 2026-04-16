@@ -1,18 +1,23 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import {
-  BojSessionClient,
   type BojUserLanguageStats,
   type BojUserProfile,
   type BojUserSubmissionsCheckpoint,
   type BojUserSubmissionFetchProgress,
   type BojUserSubmissionsSnapshot,
 } from "./boj/session.js";
-import { authenticateBojClient } from "./boj/auth.js";
 import { loadConfig } from "./config.js";
 import { AuthenticationError, ConfigurationError, StopRequestedError } from "./errors.js";
+import {
+  authenticateClient,
+  createClient,
+  createInterruptController,
+  formatDisplayPath,
+  writeJsonFile,
+} from "./cli-support.js";
 import {
   backupProblemsFromSubmissions,
   type ProblemBackupProgress,
@@ -23,6 +28,8 @@ import {
   runBackupSync,
   type BackupSyncStageProgress,
 } from "./sync.js";
+import { runSimpleTui } from "./tui.js";
+import { resolveUserArtifactPaths } from "./user-artifacts.js";
 import { startDashboardViewerServer } from "./viewer/dashboard-site.js";
 import { openProfileViewer, startProfileViewerServer } from "./viewer/profile-site.js";
 import { startSubmissionsViewerServer } from "./viewer/submission-site.js";
@@ -32,27 +39,36 @@ export async function runCli(argv = process.argv): Promise<void> {
 
   program
     .name("boj-backup")
-    .description("CLI for backing up BOJ submissions and problem statements.")
+    .description("BOJ 백업용 CLI")
     .version("0.1.0");
+  program.showHelpAfterError();
+  program.addHelpText(
+    "after",
+    [
+      "",
+      "기본 흐름:",
+      "  boj-backup login",
+      "  boj-backup profile",
+      "  boj-backup archive",
+      "  boj-backup serve --open",
+      "  boj-backup tui",
+    ].join("\n"),
+  );
 
   program
     .command("login")
-    .description("Verify BOJ auth using BOJ_COOKIE or BOJ_ID/BOJ_PW from .env.")
-    .option("--next <path>", "BOJ next path to request after login", "/")
+    .description("현재 BOJ 로그인 세션을 확인합니다.")
+    .addOption(new Option("--next <path>", "BOJ next path to request after login").default("/").hideHelp())
     .action(async (options: { next: string }) => {
       const config = loadConfig();
       const client = createClient(config);
-      const auth = await authenticateBojClient(client, config, { nextPath: options.next });
+      const username = await authenticateClient(client, config);
 
-      console.log(`Authenticated as ${auth.username} using ${auth.detail}.`);
-      if (auth.source === "credentials") {
-        console.log(`Redirect: ${auth.redirectLocation ?? options.next}`);
-      }
-      console.log("Session cookie stored in memory.");
+      console.log(`로그인 확인 완료: ${username}`);
     });
 
   program
-    .command("sync [handle]")
+    .command("sync [handle]", { hidden: true })
     .description("Run the full backup flow: profile, profile-selected problem crawl, and problem backup with stage-level resume.")
     .option("--profile <path>", "Profile JSON output path", "data/profile.json")
     .option("--submissions <path>", "Submissions JSON output path", "data/submissions.json")
@@ -122,72 +138,73 @@ export async function runCli(argv = process.argv): Promise<void> {
     });
 
   program
-    .command("profile [handle]")
-    .description("Fetch BOJ profile info with related language stats. Defaults to the authenticated user when handle is omitted.")
-    .option("--json", "Print the combined profile snapshot as JSON")
-    .option("-o, --output <path>", "Write the combined profile snapshot JSON to a file")
-    .option("--delay <seconds>", "Base delay between BOJ requests in seconds (min 2)", parseDelaySeconds)
+    .command("profile")
+    .description("현재 사용자의 프로필 JSON을 저장합니다.")
+    .addOption(new Option("--handle <id>", "Override username").hideHelp())
+    .addOption(new Option("--json", "Print the combined profile snapshot as JSON").hideHelp())
+    .addOption(new Option("-o, --output <path>", "Write the combined profile snapshot JSON to a file").hideHelp())
+    .addOption(
+      new Option("--delay <seconds>", "Base delay between BOJ requests in seconds (min 2)")
+        .argParser(parseDelaySeconds)
+        .hideHelp(),
+    )
     .action(async (
-      handle: string | undefined,
-      options: { json?: boolean; output?: string; delay?: number },
+      options: { handle?: string; json?: boolean; output?: string; delay?: number },
     ) => {
       const config = loadConfig();
       const client = createClient(config, options.delay);
-
-      let targetHandle = handle;
-
-      if (!targetHandle) {
-        targetHandle = await authenticateClient(client, config);
-      }
-
+      const targetHandle = options.handle ?? (await authenticateClient(client, config));
       const snapshot = await client.fetchUserSnapshot(targetHandle);
+      const defaultPaths = resolveUserArtifactPaths(targetHandle);
+      const outputPath = options.output ?? defaultPaths.profilePath;
 
-      if (options.output) {
-        await writeJsonFile(options.output, snapshot);
-      }
+      await writeJsonFile(outputPath, snapshot);
 
       if (options.json) {
         console.log(JSON.stringify(snapshot, null, 2));
-        return;
+      } else {
+        printProfile(snapshot.profile);
       }
-
-      printProfile(snapshot.profile);
-
-      if (options.output) {
-        console.log(`JSON saved to ${path.resolve(options.output)}`);
-      }
+      console.log(`프로필 JSON: ${outputPath}`);
     });
 
   program
-    .command("archive [handle]")
-    .description("Run problem-selected submissions + problem/code backup using an existing profile JSON as a prerequisite.")
-    .option("--profile <path>", "Existing profile JSON path", "data/profile.json")
-    .option("--submissions <path>", "Submissions JSON output path", "data/submissions.json")
-    .option("--problems <path>", "Problem backup output directory", "problems")
-    .option("--problem-filter <filter>", "Problem ids/ranges for problem backup, e.g. 1000,1001-1010")
-    .option("--problem-limit <count>", "Limit archive crawl to the N profile-selected problems", parsePositiveInteger)
-    .option("--checkpoint <path>", "Path to the archive checkpoint JSON file")
-    .option("--submissions-checkpoint <path>", "Path to the submissions checkpoint JSON file")
-    .option("--no-resume", "Ignore existing archive/submissions checkpoints and start from the beginning")
-    .option("--overwrite-problems", "Refetch problem folders even if they already exist")
-    .option("--delay <seconds>", "Base delay between BOJ requests in seconds (min 2)", parseDelaySeconds)
-    .action(async (
-      handle: string | undefined,
-      options: {
-        profile: string;
-        submissions: string;
-        problems: string;
-        problemFilter?: string;
-        problemLimit?: number;
-        checkpoint?: string;
-        submissionsCheckpoint?: string;
-        resume?: boolean;
-        overwriteProblems?: boolean;
-        delay?: number;
-      },
-    ) => {
+    .command("archive")
+    .description("프로필 문제 목록을 기준으로 각 문제의 제출/지문/코드를 순서대로 백업합니다.")
+    .option("--problem-limit <count>", "앞에서부터 최대 N개 문제만 백업", parsePositiveInteger)
+    .option("--no-resume", "이전 체크포인트를 무시하고 처음부터 다시 시작")
+    .option("--overwrite", "이미 저장된 문제도 다시 다운로드")
+    .addOption(new Option("--handle <id>", "Override username").hideHelp())
+    .addOption(new Option("--profile <path>", "Existing profile JSON path").hideHelp())
+    .addOption(new Option("--submissions <path>", "Submissions JSON output path").hideHelp())
+    .addOption(new Option("--problems <path>", "Problem backup output directory").hideHelp())
+    .addOption(new Option("--problem-filter <filter>", "Problem ids/ranges for problem backup").hideHelp())
+    .addOption(new Option("--checkpoint <path>", "Path to the archive checkpoint JSON file").hideHelp())
+    .addOption(
+      new Option("--submissions-checkpoint <path>", "Path to the submissions checkpoint JSON file").hideHelp(),
+    )
+    .addOption(
+      new Option("--delay <seconds>", "Base delay between BOJ requests in seconds (min 2)")
+        .argParser(parseDelaySeconds)
+        .hideHelp(),
+    )
+    .action(async (options: {
+      handle?: string;
+      profile?: string;
+      submissions?: string;
+      problems?: string;
+      problemFilter?: string;
+      problemLimit?: number;
+      checkpoint?: string;
+      submissionsCheckpoint?: string;
+      resume?: boolean;
+      overwrite?: boolean;
+      delay?: number;
+    }) => {
       const config = loadConfig();
       const client = createClient(config, options.delay);
+      const username = options.handle ?? (await authenticateClient(client, config));
+      const artifacts = resolveUserArtifactPaths(username);
       const syncReporter = createSyncStageReporter();
       const interrupt = createInterruptController(
         "문제 + 제출코드 백업 중지 요청을 받았습니다. 현재 요청이 끝나면 안전하게 정지합니다.",
@@ -197,16 +214,16 @@ export async function runCli(argv = process.argv): Promise<void> {
       try {
         result = await runArchiveSync({
           client,
-          handle,
-          profilePath: options.profile,
-          submissionsPath: options.submissions,
-          problemsDir: options.problems,
+          handle: username,
+          profilePath: options.profile ?? artifacts.profilePath,
+          submissionsPath: options.submissions ?? artifacts.submissionsPath,
+          problemsDir: options.problems ?? artifacts.problemsDir,
           problemFilter: options.problemFilter,
           problemLimit: options.problemLimit,
           checkpointPath: options.checkpoint,
           submissionsCheckpointPath: options.submissionsCheckpoint,
           resume: options.resume,
-          overwriteProblems: options.overwriteProblems,
+          overwriteProblems: options.overwrite,
           shouldStop: interrupt.shouldStop,
           onStage: syncReporter.stage,
           onLog: syncReporter.log,
@@ -228,7 +245,7 @@ export async function runCli(argv = process.argv): Promise<void> {
     });
 
   program
-    .command("submissions [handle]")
+    .command("submissions [handle]", { hidden: true })
     .description("Fetch BOJ submission history from public status pages. Defaults to the authenticated user when handle is omitted.")
     .option("--json", "Print the submissions snapshot as JSON")
     .option("-o, --output <path>", "Write the submissions snapshot JSON to a file")
@@ -318,7 +335,7 @@ export async function runCli(argv = process.argv): Promise<void> {
     });
 
   program
-    .command("backup-problems <input>")
+    .command("backup-problems <input>", { hidden: true })
     .description(
       "Back up BOJ problem pages and per-problem submission history for the problem IDs found in a submissions JSON file.",
     )
@@ -375,7 +392,7 @@ export async function runCli(argv = process.argv): Promise<void> {
     });
 
   program
-    .command("languages [handle]")
+    .command("languages [handle]", { hidden: true })
     .description("Fetch and print BOJ language stats. Defaults to the authenticated user when handle is omitted.")
     .option("--delay <seconds>", "Base delay between BOJ requests in seconds (min 2)", parseDelaySeconds)
     .action(async (handle: string | undefined, options: { delay?: number }) => {
@@ -394,13 +411,13 @@ export async function runCli(argv = process.argv): Promise<void> {
 
   program
     .command("serve")
-    .description("Serve a browser dashboard where you can run crawlers and open saved results.")
-    .option("--host <host>", "Host to bind the local server to", "127.0.0.1")
+    .description("브라우저 대시보드를 실행합니다.")
     .option("--port <port>", "Port to bind the local server to. Use 0 for an auto-assigned port", parsePort, 0)
-    .option("--profile <path>", "Override the profile JSON path for the dashboard")
-    .option("--submissions <path>", "Override the submissions JSON path for the dashboard")
-    .option("--problems <path>", "Override the problems output directory for the dashboard")
     .option("--open", "Open the dashboard in a browser after the server starts")
+    .addOption(new Option("--host <host>", "Host to bind the local server to").default("127.0.0.1").hideHelp())
+    .addOption(new Option("--profile <path>", "Override the profile JSON path for the dashboard").hideHelp())
+    .addOption(new Option("--submissions <path>", "Override the submissions JSON path for the dashboard").hideHelp())
+    .addOption(new Option("--problems <path>", "Override the problems output directory for the dashboard").hideHelp())
     .action(
       async (
         options: {
@@ -431,7 +448,14 @@ export async function runCli(argv = process.argv): Promise<void> {
     );
 
   program
-    .command("serve-profile <input>")
+    .command("tui")
+    .description("간단한 터미널 메뉴로 login / profile / archive / serve를 실행합니다.")
+    .action(async () => {
+      await runSimpleTui();
+    });
+
+  program
+    .command("serve-profile <input>", { hidden: true })
     .description("Serve a BOJ-style local profile page from a saved profile JSON snapshot.")
     .option("--host <host>", "Host to bind the local server to", "127.0.0.1")
     .option("--port <port>", "Port to bind the local server to. Use 0 for an auto-assigned port", parsePort, 0)
@@ -464,7 +488,7 @@ export async function runCli(argv = process.argv): Promise<void> {
     );
 
   program
-    .command("serve-submissions <input>")
+    .command("serve-submissions <input>", { hidden: true })
     .description("Serve a BOJ-style local status page from a saved submissions JSON snapshot.")
     .option("--host <host>", "Host to bind the local server to", "127.0.0.1")
     .option("--port <port>", "Port to bind the local server to. Use 0 for an auto-assigned port", parsePort, 0)
@@ -507,14 +531,6 @@ export async function runCli(argv = process.argv): Promise<void> {
 
     throw error;
   }
-}
-
-async function authenticateClient(
-  client: BojSessionClient,
-  config: ReturnType<typeof loadConfig>,
-): Promise<string> {
-  const auth = await authenticateBojClient(client, config);
-  return auth.username;
 }
 
 function printProfile(profile: BojUserProfile): void {
@@ -575,15 +591,6 @@ function printLanguageStats(languageStats: BojUserLanguageStats): void {
 
     console.log(values.join(" | "));
   }
-}
-
-async function writeJsonFile(outputPath: string, value: unknown): Promise<void> {
-  const absolutePath = path.resolve(outputPath);
-  await mkdir(path.dirname(absolutePath), { recursive: true });
-  const tempPath = `${absolutePath}.tmp-${process.pid}`;
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rm(absolutePath, { force: true });
-  await rename(tempPath, absolutePath);
 }
 
 function parsePort(value: string): number {
@@ -901,11 +908,6 @@ function formatSourceProgressLabel(progress: ProblemBackupProgress): string {
   return `${progress.currentSourceIndex}/${progress.totalSourceFiles} (#${progress.currentSubmissionId})`;
 }
 
-function formatDisplayPath(filePath: string): string {
-  const relativePath = path.relative(process.cwd(), filePath);
-  return relativePath && !relativePath.startsWith("..") ? relativePath : filePath;
-}
-
 async function readSubmissionsCheckpoint(
   checkpointPath: string,
   username: string,
@@ -978,31 +980,6 @@ function resolveSubmissionsCheckpointPath(
 
   const safeUsername = username.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
   return path.resolve(`.boj-submissions.${safeUsername}.checkpoint.json`);
-}
-
-function createInterruptController(message: string): {
-  shouldStop: () => boolean;
-  close: () => void;
-} {
-  let stopRequested = false;
-
-  const handler = () => {
-    if (stopRequested) {
-      return;
-    }
-
-    stopRequested = true;
-    process.stderr.write(`[interrupt] ${message}\n`);
-  };
-
-  process.on("SIGINT", handler);
-
-  return {
-    shouldStop: () => stopRequested,
-    close: () => {
-      process.off("SIGINT", handler);
-    },
-  };
 }
 
 function addPathSuffix(filePath: string, suffix: string): string {
@@ -1127,21 +1104,4 @@ function formatRateLimitLabel(
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("ko-KR").format(value);
-}
-
-function createClient(
-  config: ReturnType<typeof loadConfig>,
-  delaySeconds?: number,
-): BojSessionClient {
-  return new BojSessionClient({
-    baseUrl: config.baseUrl,
-    credentials: {
-      userId: config.bojId ?? "",
-      password: config.bojPassword ?? "",
-    },
-    userAgent: config.userAgent,
-    requestDelayMs: delaySeconds ? Math.round(delaySeconds * 1000) : config.requestDelayMs,
-    requestJitterMs: config.requestJitterMs,
-    backoffScheduleMs: config.backoffScheduleMs,
-  });
 }

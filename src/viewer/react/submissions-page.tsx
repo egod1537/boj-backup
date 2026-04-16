@@ -18,7 +18,6 @@ export function renderSubmissionsStatusReactPage(
 ): string {
   const username = snapshot.username;
   const problemIdValue = options.problemNav ? String(options.problemNav.problemId) : "";
-  const formAction = options.problemNav ? options.problemNav.submissionsUrl : "/status";
   return ViewerDocument({
     title: options.problemNav ? `${options.problemNav.problemId}번 내 제출` : "채점 현황",
     styleText: SUBMISSIONS_PAGE_STYLE,
@@ -32,7 +31,10 @@ export function renderSubmissionsStatusReactPage(
             </div>
             <div className="col-md-12">
               <div className="text-center">
-                <form className="form-inline" action={formAction} method="get">
+                <form className="form-inline" action="/status" method="get">
+                  {options.problemNav ? (
+                    <input type="hidden" name="from_mine" value="1" />
+                  ) : null}
                   <input
                     type="text"
                     className="form-control margin-left-3"

@@ -90,6 +90,7 @@ export interface ProblemListEntry {
   tierLevel: number | null;
   tierLabel: string | null;
   submissionCount: number | null;
+  tagKeys: string[];
   tagNames: string[];
   tagAliases: string[];
   problemUrl: string;

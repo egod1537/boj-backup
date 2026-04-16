@@ -880,6 +880,145 @@ export class BojSessionClient {
     };
   }
 
+  async fetchUserSubmissionsForProblem(
+    username: string,
+    problemId: number,
+    options: {
+      availableProblemCount?: number | null;
+      selectionSummary?: string | null;
+      selectedProblemCount?: number | null;
+      completedProblemCount?: number | null;
+      onProgress?: (progress: BojUserSubmissionFetchProgress) => void;
+      resumeFrom?: BojUserSubmissionsCheckpoint | null;
+      onCheckpoint?: (checkpoint: BojUserSubmissionsCheckpoint) => Promise<void> | void;
+      shouldStop?: () => boolean;
+    } = {},
+  ): Promise<BojUserSubmissionsSnapshot> {
+    const sourceUrl = new URL(`status?user_id=${encodeURIComponent(username)}`, this.baseUrl).toString();
+    const resumeFrom = options.resumeFrom ?? null;
+    const startedAt = resumeFrom?.startedAt ?? new Date().toISOString();
+    const rows: BojUserSubmissionRow[] = resumeFrom ? [...resumeFrom.rows] : [];
+    let pagesFetched = resumeFrom?.pagesFetched ?? 0;
+    const availableProblemCount = options.availableProblemCount ?? resumeFrom?.availableProblemCount ?? null;
+    const selectionSummary = options.selectionSummary ?? resumeFrom?.selectionSummary ?? null;
+    const selectedProblemCount = options.selectedProblemCount ?? 1;
+    const completedProblemCount = options.completedProblemCount ?? 0;
+
+    if (resumeFrom && resumeFrom.username !== username) {
+      throw new Error(
+        `Submissions checkpoint belongs to ${resumeFrom.username}, not ${username}.`,
+      );
+    }
+
+    if (
+      resumeFrom &&
+      Array.isArray(resumeFrom.problemIds) &&
+      (resumeFrom.problemIds.length !== 1 || resumeFrom.problemIds[0] !== problemId)
+    ) {
+      throw new Error(`Submissions checkpoint problem selection mismatch for ${username}.`);
+    }
+
+    let nextPath: string | null =
+      resumeFrom?.nextPath ?? buildProblemStatusPath(username, problemId);
+    const seenPaths = new Set<string>(resumeFrom?.seenPaths ?? []);
+
+    while (nextPath && !seenPaths.has(nextPath)) {
+      throwIfStopRequested(options.shouldStop);
+      seenPaths.add(nextPath);
+
+      const response = await this.getWithRateLimit(nextPath, {
+        throwHttpErrors: false,
+      });
+
+      if (response.statusCode === 404) {
+        throw new Error(`BOJ user status page not found: ${username}`);
+      }
+
+      if (response.statusCode !== 200) {
+        throw new Error(`Unexpected response from BOJ user status page: ${response.statusCode}`);
+      }
+
+      const $ = load(response.body);
+      const table = $("#status-table");
+
+      if (table.length === 0) {
+        throw new Error(`Could not parse BOJ user status table for ${username}.`);
+      }
+
+      let lastSubmissionId: number | null = rows.length > 0 ? rows.at(-1)?.[0] ?? null : null;
+      table.find("tbody tr").each((_, rowElement) => {
+        const row = parseStatusRow($, rowElement);
+        if (row) {
+          rows.push(row);
+          lastSubmissionId = row[0];
+        }
+      });
+
+      pagesFetched += 1;
+
+      options.onProgress?.({
+        username,
+        limitCount: null,
+        estimatedTotalCount: null,
+        selectedProblemCount,
+        completedProblemCount,
+        currentProblemId: problemId,
+        pagesFetched,
+        rowsFetched: rows.length,
+        lastSubmissionId,
+        nextDelayMs: this.getRateLimitSnapshot().nextDelayMs,
+        delayReason: this.getRateLimitSnapshot().delayReason,
+        backoffAttempt: this.getRateLimitSnapshot().backoffAttempt,
+      });
+
+      const nextHref = $("#next_page").attr("href");
+      nextPath = nextHref ? normalizeGotPath(nextHref) : null;
+
+      if (options.onCheckpoint) {
+        await options.onCheckpoint({
+          kind: "boj-user-submissions-checkpoint",
+          version: 1,
+          username,
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          sourceUrl,
+          mode: "problem-status",
+          limitCount: null,
+          estimatedTotalCount: null,
+          problemIds: [problemId],
+          availableProblemCount,
+          selectionSummary,
+          problemIndex: completedProblemCount,
+          currentProblemId: problemId,
+          pagesFetched,
+          totalCount: rows.length,
+          nextPath,
+          seenPaths: [...seenPaths],
+          columns: BOJ_USER_SUBMISSION_COLUMNS,
+          rows,
+        });
+      }
+    }
+
+    rows.sort((left, right) => right[0] - left[0]);
+
+    return {
+      username,
+      fetchedAt: new Date().toISOString(),
+      sourceUrl,
+      mode: "problem-status",
+      limitCount: null,
+      estimatedTotalCount: null,
+      problemIds: [problemId],
+      availableProblemCount,
+      selectionSummary,
+      totalCount: rows.length,
+      pagesFetched,
+      columns: BOJ_USER_SUBMISSION_COLUMNS,
+      rows,
+    };
+  }
+
   async fetchUserSnapshot(username: string): Promise<BojUserSnapshot> {
     const profile = await this.fetchUserProfile(username);
     const languageStats = await this.fetchUserLanguageStats(username);

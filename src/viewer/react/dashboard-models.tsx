@@ -6,10 +6,12 @@ import type {
   DashboardTaskStatus,
 } from "../dashboard-types.js";
 
-export interface ArtifactCardModel {
-  tone: "sync" | "profile" | "submissions" | "problems";
+export interface PipelineStageModel {
+  key: "profile" | "archive";
   title: string;
-  exists: boolean;
+  dependency: string;
+  state: "completed" | "active" | "pending" | "blocked" | "failed" | "stopped";
+  stateLabel: string;
   value: string;
   note: string;
   actions: Array<
@@ -61,44 +63,55 @@ export interface ProblemCrawlProgressModel {
 export function buildHeroStats(artifacts: DashboardArtifactsState): HeroStatModel[] {
   return [
     {
-      label: "체크포인트",
-      value: artifacts.sync.exists ? (artifacts.sync.phase || "사용 중") : "없음",
-      note: artifacts.sync.exists ? `업데이트 ${artifacts.sync.updatedAt || "-"}` : "대기 중인 백업 체크포인트 없음",
+      label: "사용자",
+      value: artifacts.profile.username || artifacts.submissions.username || artifacts.sync.username || "-",
+      note: artifacts.profile.exists ? "프로필 기준 사용자" : "아직 사용자 백업이 없습니다.",
     },
     {
-      label: "프로필",
-      value: artifacts.profile.username || "-",
+      label: "프로필 JSON",
+      value: artifacts.profile.exists ? "완료" : "대기",
       note: artifacts.profile.exists ? `프로필 저장 ${artifacts.profile.fetchedAt || "-"}` : "아직 프로필 JSON 없음",
     },
     {
-      label: "제출",
+      label: "제출 JSON",
       value: artifacts.submissions.totalCount === null ? "-" : String(artifacts.submissions.totalCount),
       note: artifacts.submissions.exists ? `${artifacts.submissions.username || "-"} 제출 백업` : "아직 제출 JSON 없음",
     },
     {
-      label: "문제",
+      label: "문제 백업",
       value: String(artifacts.problems.totalCount || 0),
       note: artifacts.problems.exists ? "백업된 문제 폴더" : "문제 폴더가 비어 있음",
     },
   ];
 }
 
-export function buildArtifactCards(artifacts: DashboardArtifactsState): ArtifactCardModel[] {
+export function buildPipelineStages(
+  artifacts: DashboardArtifactsState,
+  task: DashboardTaskSnapshot | null,
+): PipelineStageModel[] {
+  const activeStageKey = resolveActivePipelineStage(task);
+  const activeRuntimeState = task ? resolvePipelineRuntimeState(task.status) : null;
+
+  const profileState = artifacts.profile.exists
+    ? "completed"
+    : activeStageKey === "profile"
+      ? (activeRuntimeState ?? "active")
+      : "pending";
+  const archiveState = artifacts.problems.exists
+    ? "completed"
+    : activeStageKey === "archive"
+      ? (activeRuntimeState ?? "active")
+      : artifacts.profile.exists
+        ? "pending"
+        : "blocked";
+
   return [
     {
-      tone: "sync",
-      title: "백업 체크포인트",
-      exists: artifacts.sync.exists,
-      value: artifacts.sync.exists ? (artifacts.sync.phase || "사용 중") : "없음",
-      note: artifacts.sync.exists
-        ? `사용자 ${artifacts.sync.username || "-"} · ${artifacts.sync.updatedAt || "-"}`
-        : "현재 이어받을 sync 체크포인트가 없습니다.",
-      actions: [{ type: "button", label: "체크포인트 위치 열기", key: "sync" }],
-    },
-    {
-      tone: "profile",
+      key: "profile",
       title: "프로필 JSON",
-      exists: artifacts.profile.exists,
+      dependency: "선행 조건 없음",
+      state: profileState,
+      stateLabel: resolvePipelineStateLabel(profileState),
       value: artifacts.profile.username || "없음",
       note: artifacts.profile.exists
         ? `프로필 저장 시각 ${artifacts.profile.fetchedAt || "-"}`
@@ -114,36 +127,88 @@ export function buildArtifactCards(artifacts: DashboardArtifactsState): Artifact
       ],
     },
     {
-      tone: "submissions",
-      title: "제출 JSON",
-      exists: artifacts.submissions.exists,
-      value: artifacts.submissions.totalCount === null ? "없음" : String(artifacts.submissions.totalCount),
-      note: artifacts.submissions.exists
-        ? `사용자 ${artifacts.submissions.username || "-"} 제출 백업`
-        : "제출 기록 JSON이 아직 생성되지 않았습니다.",
-      actions: [
-        { type: "button", label: "저장 위치 열기", key: "submissions" },
-        ...(artifacts.submissions.exists && artifacts.submissions.statusUrl
-          ? [{ type: "link", label: "제출 보기", href: artifacts.submissions.statusUrl, primary: true, external: false } as const]
-          : []),
-      ],
-    },
-    {
-      tone: "problems",
-      title: "문제 백업",
-      exists: artifacts.problems.exists,
-      value: String(artifacts.problems.totalCount || 0),
+      key: "archive",
+      title: "문제 아카이브",
+      dependency: "프로필 JSON 필요",
+      state: archiveState,
+      stateLabel: resolvePipelineStateLabel(archiveState),
+      value:
+        `${artifacts.problems.totalCount || 0}문제` +
+        (artifacts.submissions.totalCount !== null ? ` · ${artifacts.submissions.totalCount}제출` : ""),
       note: artifacts.problems.exists
-        ? "문제 폴더, 메타, 문제별 제출 기록과 코드가 저장돼 있습니다."
-        : "문제 폴더가 아직 비어 있습니다.",
+        ? "문제별로 제출 내역을 모으면서 submissions.json 과 문제 폴더를 함께 갱신합니다."
+        : "선택된 문제를 순서대로 돌며 지문, 메타, 제출 코드까지 함께 백업합니다.",
       actions: [
+        { type: "button", label: "제출 위치 열기", key: "submissions" },
         { type: "button", label: "저장 위치 열기", key: "problems" },
+        ...(artifacts.submissions.exists && artifacts.submissions.statusUrl
+          ? [{ type: "link", label: "제출 보기", href: artifacts.submissions.statusUrl, primary: false, external: false } as const]
+          : []),
         ...(artifacts.problems.exists && artifacts.problems.listUrl
           ? [{ type: "link", label: "문제 목록 보기", href: artifacts.problems.listUrl, primary: true, external: false } as const]
           : []),
       ],
     },
   ];
+}
+
+function resolveActivePipelineStage(
+  task: DashboardTaskSnapshot | null,
+): PipelineStageModel["key"] | null {
+  if (!task) {
+    return null;
+  }
+
+  if (task.kind === "profile") {
+    return "profile";
+  }
+
+  if (task.kind === "sync") {
+    const stageValue = getStatusValue(task, "단계") || "";
+    if (stageValue.includes("1/3")) {
+      return "profile";
+    }
+    return "archive";
+  }
+
+  if (task.kind === "archive" || task.kind === "submissions" || task.kind === "problems") {
+    return "archive";
+  }
+
+  return null;
+}
+
+function resolvePipelineRuntimeState(
+  status: DashboardTaskStatus,
+): PipelineStageModel["state"] | null {
+  switch (status) {
+    case "failed":
+      return "failed";
+    case "stopped":
+    case "stopping":
+      return "stopped";
+    case "running":
+      return "active";
+    default:
+      return null;
+  }
+}
+
+function resolvePipelineStateLabel(state: PipelineStageModel["state"]): string {
+  switch (state) {
+    case "completed":
+      return "완료";
+    case "active":
+      return "진행 중";
+    case "pending":
+      return "대기";
+    case "blocked":
+      return "선행 필요";
+    case "failed":
+      return "실패";
+    case "stopped":
+      return "중지됨";
+  }
 }
 
 export function renderStatusRows(lines: string[]): JSX.Element[] {
@@ -317,11 +382,10 @@ export function buildTaskVisualization(task: DashboardTaskSnapshot | null): Task
   }
 
   if (task.kind === "archive") {
-    const isProblemStage = task.status === "completed" || stageValue.includes("2/2");
     return {
       steps: buildArchiveMajorSteps(task),
-      checklistTitle: isProblemStage ? "문제 백업 세부 단계" : "제출 기록 수집 세부 단계",
-      checklist: isProblemStage ? buildProblemPhaseSteps(task) : buildSubmissionPhaseSteps(task),
+      checklistTitle: "문제 아카이브 세부 단계",
+      checklist: buildArchiveExecutionSteps(task),
     };
   }
 
@@ -479,25 +543,57 @@ function buildProblemPhaseSteps(task: DashboardTaskSnapshot): VisualStep[] {
 }
 
 function buildArchiveMajorSteps(task: DashboardTaskSnapshot): VisualStep[] {
-  const stageValue = getStatusValue(task, "단계") || "";
-  let activeIndex = 1;
-  let completedCount = 1;
+  return createLinearSteps([
+    { label: "프로필 확인", note: "profile.json 선행 확인" },
+    { label: "문제 아카이브", note: getStatusValue(task, "현재 문제") || "문제별 제출/지문/코드 저장" },
+  ], 1, 1, task.status);
+}
+
+function buildArchiveExecutionSteps(task: DashboardTaskSnapshot): VisualStep[] {
+  const currentPhase = getStatusValue(task, "현재 단계") || "";
+  const currentProblem = getStatusValue(task, "현재 문제");
+  const sourceProgress = getStatusValue(task, "코드 다운로드");
+  const submissionCount = getStatusValue(task, "문제별 제출 수");
+  const problemProgress = getStatusValue(task, "문제 진행") || getStatusValue(task, "진행");
+  let activeIndex = 0;
+  let completedCount = 0;
 
   if (task.status === "completed") {
-    activeIndex = 2;
-    completedCount = 3;
-  } else if (stageValue.includes("2/2")) {
+    activeIndex = 3;
+    completedCount = 4;
+  } else if (currentPhase === "제출 내역 수집" || currentPhase === "문제 선택") {
+    activeIndex = currentPhase === "문제 선택" ? 0 : 1;
+    completedCount = currentPhase === "문제 선택" ? 0 : 1;
+  } else if (currentPhase === "문제 다운로드") {
+    activeIndex = 1;
+    completedCount = 1;
+  } else if (currentPhase === "solved.ac 메타 다운로드") {
     activeIndex = 2;
     completedCount = 2;
+  } else if (
+    currentPhase === "제출 코드 다운로드" ||
+    currentPhase === "문제 폴더 저장" ||
+    currentPhase === "완료" ||
+    currentPhase === "기존 문제 건너뜀"
+  ) {
+    activeIndex = 3;
+    completedCount = currentPhase === "제출 코드 다운로드" ? 3 : 4;
   }
 
   return createLinearSteps([
-    { label: "프로필 확인", note: "profile.json 선행 확인" },
     {
-      label: "제출 기록 수집",
-      note: getStatusValue(task, "문제 진행") || getStatusValue(task, "행 수") || "status 페이지 순회",
+      label: "문제 선택",
+      note: problemProgress || "프로필의 문제 목록을 순서대로 사용",
     },
-    { label: "문제 백업", note: getStatusValue(task, "현재 문제") || "문제와 제출 코드 저장" },
+    {
+      label: "문제 제출 내역 수집",
+      note: currentProblem && currentProblem !== "-" ? currentProblem : "status 페이지 순회",
+    },
+    { label: "문제 HTML / solved.ac 메타", note: currentPhase || "지문과 메타 수집" },
+    {
+      label: "제출 코드 / 파일 저장",
+      note: sourceProgress && sourceProgress !== "-" ? sourceProgress : (submissionCount ? `제출 수 ${submissionCount}` : "코드 저장"),
+    },
   ], activeIndex, completedCount, task.status);
 }
 
