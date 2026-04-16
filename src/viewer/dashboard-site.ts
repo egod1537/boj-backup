@@ -472,6 +472,120 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "POST" && pathname === "/api/tasks/archive-submissions") {
+    const form = await readFormBody(request);
+    const delaySeconds = parseDelayParam(form.get("delaySeconds"));
+    const resume = (form.get("resume") ?? "on") !== "off";
+    const problemLimit = parseOptionalPositiveInteger(form.get("problemLimit"));
+
+    const task = startDashboardTask(
+      request,
+      response,
+      taskController,
+      "submissions",
+      "제출 JSON 수집",
+      async (context) => {
+        const config = loadConfig();
+        const client = createClient(config, delaySeconds);
+        const targetHandle = await authenticateClient(client, config);
+        applyDashboardUserArtifactPaths(artifactPaths, targetHandle);
+
+        const profilePath = artifactPaths.profilePath;
+        const submissionsPath = artifactPaths.submissionsPath;
+        const profileSnapshot = await readOptionalProfileSnapshot(profilePath);
+        if (!profileSnapshot) {
+          throw new ConfigurationError(
+            `Profile snapshot is required before submissions backup: ${profilePath}. Run profile crawl first.`,
+          );
+        }
+
+        const profileUsername = profileSnapshot.profile.username || profileSnapshot.username;
+        if (profileUsername !== targetHandle) {
+          throw new ConfigurationError(
+            `Profile snapshot belongs to ${profileUsername}, not ${targetHandle}: ${profilePath}`,
+          );
+        }
+
+        const checkpointPath = resolveSubmissionsCheckpointPath(targetHandle, submissionsPath, undefined);
+        if (!resume) {
+          await removeFileIfExists(checkpointPath);
+          context.log("resume 비활성화: 제출 JSON 수집을 처음부터 다시 시작");
+        }
+
+        const problemSelection = selectProblemsFromProfile(profileSnapshot, {
+          problemLimit: problemLimit ?? undefined,
+        });
+        if (problemSelection.problemIds.length === 0) {
+          throw new ConfigurationError("No problems selected from profile snapshot.");
+        }
+
+        const checkpoint = resume
+          ? await readSubmissionsCheckpoint(checkpointPath, targetHandle)
+          : null;
+        if (checkpoint) {
+          context.log(
+            `제출 기록 resume: ${checkpoint.totalCount} rows / ${checkpoint.pagesFetched} pages (${checkpointPath})`,
+          );
+        }
+
+        context.setStatus([
+          `사용자: ${targetHandle}`,
+          "단계: 제출 JSON 수집",
+          `프로필 JSON: ${profilePath}`,
+          `출력: ${submissionsPath}`,
+          `문제 선택: ${problemSelection.selectionSummary}`,
+          `대상 문제: ${formatNumber(problemSelection.totalProblems)} / ${formatNumber(problemSelection.availableProblems)}`,
+          `이어받기: ${resume ? "on" : "off"}`,
+          `딜레이: ${delaySeconds.toFixed(1)}s`,
+        ]);
+
+        const submissions = await client.fetchUserSubmissionsForProblems(
+          targetHandle,
+          problemSelection.problemIds,
+          {
+            availableProblemCount: problemSelection.availableProblems,
+            selectionSummary: problemSelection.selectionSummary,
+            resumeFrom: checkpoint,
+            shouldStop: context.shouldStop,
+            onCheckpoint: (nextCheckpoint) => writeJsonFile(checkpointPath, nextCheckpoint),
+            onProgress: (progress) => {
+              context.setStatus(
+                formatArchiveSubmissionsStatusLines(
+                  progress,
+                  submissionsPath,
+                  undefined,
+                  problemLimit,
+                ),
+              );
+              context.log(formatSubmissionsLogLine(progress));
+            },
+          },
+        );
+
+        await writeJsonFile(submissionsPath, submissions);
+        await removeFileIfExists(checkpointPath);
+        await writeDashboardLastUserState(artifactPaths.rootDir, submissions.username);
+        context.setSummary(`제출 JSON 저장 완료: ${submissionsPath}`);
+        context.setStatus([
+          `사용자: ${submissions.username}`,
+          "단계: 제출 JSON 완료",
+          `문제 선택: ${submissions.selectionSummary ?? problemSelection.selectionSummary}`,
+          `대상 문제: ${formatNumber(submissions.problemIds?.length ?? problemSelection.totalProblems)} / ${formatNumber(submissions.availableProblemCount ?? problemSelection.availableProblems)}`,
+          `제출 수: ${formatNumber(submissions.totalCount)}`,
+          `수집 페이지: ${formatNumber(submissions.pagesFetched)}`,
+          `저장: ${submissionsPath}`,
+        ]);
+        context.log(`제출 JSON 저장 완료: ${submissionsPath}`);
+      },
+    );
+    if (!task) {
+      return;
+    }
+
+    respondTaskAccepted(request, response, task.id);
+    return;
+  }
+
   if (request.method === "POST" && pathname === "/api/tasks/archive") {
     const form = await readFormBody(request);
     const delaySeconds = parseDelayParam(form.get("delaySeconds"));
@@ -485,7 +599,7 @@ async function handleRequest(
       response,
       taskController,
       "archive",
-      "문제 + 제출코드 크롤링",
+      "문제 아카이브",
       async (context) => {
         const config = loadConfig();
         const client = createClient(config, delaySeconds);
@@ -496,12 +610,19 @@ async function handleRequest(
         const problemsDir = artifactPaths.problemsDir;
 
         context.setStatus([
-          "단계: 1/2 대기",
+          "단계: 2/2 문제 아카이브",
           `사용자: ${targetHandle}`,
           `저장 폴더: ${path.join(artifactPaths.rootDir, sanitizeDashboardUsername(targetHandle))}`,
-          `프로필 JSON: ${profilePath}`,
-          `제출 JSON: 준비`,
-          `문제 디렉터리: 준비`,
+          "프로필 JSON: 사용",
+          "문제 선택: 준비",
+          "대상 문제: 계산 중",
+          "진행: 0/0 (saved 0, skipped 0)",
+          "현재 문제: -",
+          "현재 단계: 문제 선택",
+          "문제별 제출 수: -",
+          "코드 다운로드: -",
+          `제출 JSON: ${submissionsPath}`,
+          `문제 디렉터리: ${problemsDir}`,
           `문제 필터: ${problemFilter || "전체"}`,
           `문제 수 제한: ${problemLimit === null ? "없음" : formatNumber(problemLimit)}`,
           `딜레이: ${delaySeconds.toFixed(1)}s`,
@@ -521,7 +642,7 @@ async function handleRequest(
           shouldStop: context.shouldStop,
           onStage: (progress) => {
             context.setStatus(formatArchiveStageStatusLines(progress, problemFilter, problemLimit));
-            context.log(`단계 ${progress.phaseIndex}/${progress.totalPhases}: ${formatSyncPhase(progress.phase)}`);
+            context.log(`단계 준비: 문제 아카이브`);
           },
           onLog: (message) => {
             context.log(message);
@@ -544,7 +665,7 @@ async function handleRequest(
         });
 
         await writeDashboardLastUserState(artifactPaths.rootDir, result.username);
-        context.setSummary(`문제 + 제출코드 크롤링 완료: ${result.username}`);
+        context.setSummary(`문제 아카이브 완료: ${result.username}`);
         context.setStatus([
           "단계: 2/2 완료",
           `사용자: ${result.username}`,
@@ -552,7 +673,11 @@ async function handleRequest(
           `제출 JSON: 저장 완료`,
           `문제 디렉터리: 저장 완료`,
           `문제 선택: ${result.problems.selectionSummary}`,
-          `문제 수: ${formatNumber(result.problems.totalProblems)}/${formatNumber(result.problems.availableProblems)}`,
+          `진행: ${formatNumber(result.problems.totalProblems)}/${formatNumber(result.problems.totalProblems)} (saved ${formatNumber(result.problems.savedProblems)}, skipped ${formatNumber(result.problems.skippedProblems)})`,
+          "현재 문제: -",
+          "현재 단계: 완료",
+          "문제별 제출 수: -",
+          "코드 다운로드: -",
           `코드 파일 수: ${formatNumber(result.problems.totalSourceFiles)}`,
         ]);
       },
@@ -635,18 +760,22 @@ async function handleRequest(
 
   if (request.method === "POST" && pathname === "/api/tasks/problems") {
     const form = await readFormBody(request);
-    const inputPath = path.resolve(form.get("inputPath")?.trim() || artifactPaths.submissionsPath);
-    const outputDir = path.resolve(form.get("outputDir")?.trim() || artifactPaths.problemsDir);
+    const inputPathValue = form.get("inputPath")?.trim() || "";
+    const outputDirValue = form.get("outputDir")?.trim() || "";
     const delaySeconds = parseDelayParam(form.get("delaySeconds"));
     const overwrite = form.get("overwrite") === "on";
     const problemFilter = form.get("problemFilter")?.trim() || undefined;
     const problemLimit = parseOptionalPositiveInteger(form.get("problemLimit"));
 
-    artifactPaths.problemsDir = outputDir;
     const task = startDashboardTask(request, response, taskController, "problems", "문제 백업", async (context) => {
       const config = loadConfig();
       const client = createClient(config, delaySeconds);
-      await authenticateClient(client, config);
+      const targetHandle = await authenticateClient(client, config);
+      applyDashboardUserArtifactPaths(artifactPaths, targetHandle);
+      const inputPath = path.resolve(inputPathValue || artifactPaths.submissionsPath);
+      const outputDir = path.resolve(outputDirValue || artifactPaths.problemsDir);
+      artifactPaths.submissionsPath = inputPath;
+      artifactPaths.problemsDir = outputDir;
       context.throwIfStopRequested();
 
       context.setStatus([
@@ -699,6 +828,7 @@ async function handleRequest(
       renderProblemsIndexPage(filteredEntries, artifactPaths.problemsDir, {
         query,
         totalCount: entries.length,
+        suggestions: buildProblemSearchSuggestions(entries),
       }),
     );
     return;
@@ -715,8 +845,12 @@ async function handleRequest(
 
     const problemDir = path.join(artifactPaths.problemsDir, String(problemId));
     const submissionsSnapshot = await readOptionalProblemSubmissionHistory(problemDir);
-    const localProblemUrl = `/problems/${problemId}`;
-    const localProblemSubmissionsUrl = `/problems/${problemId}/submissions`;
+    const localProblemPath = `/problems/${problemId}`;
+    const localProblemUrl = `${requestUrl.origin}${localProblemPath}`;
+    const localProblemSubmissionsUrl =
+      submissionsSnapshot
+        ? `${requestUrl.origin}/status?from_mine=1&problem_id=${problemId}&user_id=${encodeURIComponent(submissionsSnapshot.username)}`
+        : `${requestUrl.origin}/problems/${problemId}/submissions`;
 
     if (subPath === "submissions" && childId) {
       const submissionId = Number.parseInt(childId, 10);
@@ -735,13 +869,14 @@ async function handleRequest(
         return;
       }
 
-      respondHtml(
-        response,
-        renderProblemSubmissionReactPage(submissionView, requestUrl.origin, {
-          localProfileOrigin: requestUrl.origin,
-        }),
-      );
-      return;
+        respondHtml(
+          response,
+          renderProblemSubmissionReactPage(submissionView, requestUrl.origin, {
+            localProfileOrigin: requestUrl.origin,
+            dashboardUrl: "/",
+          }),
+        );
+        return;
     }
 
     if (subPath === "submissions") {
@@ -761,6 +896,7 @@ async function handleRequest(
           requestUrl.origin,
           {
             localProfileOrigin: requestUrl.origin,
+            dashboardUrl: "/",
             problemNav: {
               problemId,
               problemTitle: submissionsSnapshot.title,
@@ -777,14 +913,16 @@ async function handleRequest(
     const htmlPath = path.join(problemDir, "index.html");
     try {
       const html = await readFile(htmlPath, "utf8");
-      respondHtml(
-        response,
-        rewriteProblemDetailHtml(html, {
-          problemId,
-          problemUrl: localProblemUrl,
-          submissionsUrl: localProblemSubmissionsUrl,
-        }),
-      );
+        respondHtml(
+          response,
+          rewriteProblemDetailHtml(html, {
+            problemId,
+            problemsUrl: `${requestUrl.origin}/problems`,
+            problemUrl: localProblemUrl,
+            submissionsUrl: localProblemSubmissionsUrl,
+            dashboardUrl: `${requestUrl.origin}/`,
+          }),
+        );
     } catch {
       respondHtml(response, renderDashboardErrorPage(`문제 HTML을 찾을 수 없습니다: ${htmlPath}`), 404);
     }
@@ -806,20 +944,64 @@ async function handleRequest(
     const infoPath = `/user/${username}`;
     const languagePath = `/user/language/${username}`;
     if (pathname === "/user" || pathname === infoPath) {
-      respondHtml(response, renderProfileInfoPage(profileSnapshot, requestUrl.origin, matchedSubmissions));
+      respondHtml(response, renderProfileInfoPage(profileSnapshot, requestUrl.origin, matchedSubmissions, "/"));
       return;
     }
 
     if (pathname === "/user/language" || pathname === languagePath) {
       respondHtml(
         response,
-        renderProfileLanguagePage(profileSnapshot, requestUrl.origin, matchedSubmissions),
+        renderProfileLanguagePage(profileSnapshot, requestUrl.origin, matchedSubmissions, "/"),
       );
       return;
     }
   }
 
   if (request.method === "GET" && pathname === "/status") {
+    const requestedProblemId = requestUrl.searchParams.get("problem_id");
+    const requestedUserId = requestUrl.searchParams.get("user_id");
+    const fromMine = requestUrl.searchParams.get("from_mine");
+
+    if (fromMine === "1" && requestedProblemId) {
+      const problemId = Number.parseInt(requestedProblemId, 10);
+      if (!Number.isInteger(problemId)) {
+        respondHtml(response, renderDashboardErrorPage("잘못된 문제 번호입니다."), 404);
+        return;
+      }
+
+      const problemDir = path.join(artifactPaths.problemsDir, String(problemId));
+      const problemSnapshot = await readOptionalProblemSubmissionHistory(problemDir);
+      if (!problemSnapshot) {
+        respondHtml(response, renderDashboardErrorPage("문제별 제출 기록이 없어 채점 현황을 표시할 수 없습니다."), 404);
+        return;
+      }
+
+      if (requestedUserId && requestedUserId !== problemSnapshot.username) {
+        respondHtml(response, renderDashboardErrorPage("요청한 사용자와 백업된 제출 기록 사용자가 다릅니다."), 404);
+        return;
+      }
+
+      respondHtml(
+        response,
+        renderSubmissionsStatusPage(
+          convertProblemSubmissionHistoryToSnapshot(problemSnapshot),
+          requestUrl.origin,
+          {
+            localProfileOrigin: requestUrl.origin,
+            dashboardUrl: "/",
+            problemNav: {
+              problemId,
+              problemTitle: problemSnapshot.title,
+              problemUrl: `${requestUrl.origin}/problems/${problemId}`,
+              submissionsUrl: `${requestUrl.origin}${buildLocalProblemStatusUrl(problemId, problemSnapshot.username)}`,
+              activeTab: "submissions",
+            },
+          },
+        ),
+      );
+      return;
+    }
+
     const submissionsSnapshot = await readOptionalSubmissionsSnapshot(artifactPaths.submissionsPath);
     if (!submissionsSnapshot) {
       respondHtml(response, renderDashboardErrorPage("submissions.json 이 없어 제출 현황을 표시할 수 없습니다."), 404);
@@ -830,9 +1012,33 @@ async function handleRequest(
     const profileUsername = profileSnapshot?.profile.username || profileSnapshot?.username || null;
     const options =
       profileUsername && profileUsername === submissionsSnapshot.username
-        ? { localProfileOrigin: requestUrl.origin }
+        ? { localProfileOrigin: requestUrl.origin, dashboardUrl: "/" }
         : {};
     respondHtml(response, renderSubmissionsStatusPage(submissionsSnapshot, requestUrl.origin, options));
+    return;
+  }
+
+  if (request.method === "GET" && pathname.startsWith("/source/")) {
+    const id = pathname.slice("/source/".length).split("/")[0];
+    const submissionId = Number.parseInt(id, 10);
+    if (!Number.isInteger(submissionId)) {
+      respondHtml(response, renderDashboardErrorPage("잘못된 제출 번호입니다."), 404);
+      return;
+    }
+
+    const submissionView = await findProblemSubmissionView(artifactPaths.problemsDir, submissionId);
+    if (!submissionView) {
+      respondHtml(response, renderDashboardErrorPage(`로컬 소스 코드를 찾을 수 없습니다: #${submissionId}`), 404);
+      return;
+    }
+
+    respondHtml(
+      response,
+      renderProblemSubmissionReactPage(submissionView, requestUrl.origin, {
+        localProfileOrigin: requestUrl.origin,
+        dashboardUrl: "/",
+      }),
+    );
     return;
   }
 
@@ -1130,7 +1336,7 @@ function buildSyncResumeState(
   return {
     key: "sync-checkpoint",
     kind: mode,
-    title: mode === "sync" ? "전체 동기화 이어받기" : "문제 + 제출코드 이어받기",
+    title: mode === "sync" ? "전체 동기화 이어받기" : "문제 아카이브 이어받기",
     username: syncCheckpoint.username,
     updatedAt: syncCheckpoint.updatedAt,
     phase: formatSyncPhase(syncCheckpoint.phase),
@@ -1144,7 +1350,7 @@ function buildSyncResumeState(
     problemFilter: syncCheckpoint.problemFilter ?? null,
     action: {
       endpoint: mode === "sync" ? "/api/tasks/sync" : "/api/tasks/archive",
-      label: mode === "sync" ? "전체 동기화 이어받기" : "문제 + 제출코드 이어받기",
+      label: mode === "sync" ? "전체 동기화 이어받기" : "문제 아카이브 이어받기",
       body: buildResumeActionBody(syncCheckpoint),
     },
   };
@@ -1195,6 +1401,32 @@ function buildResumeProgress(
   submissions: BojUserSubmissionsSnapshot | null,
   problems: ProblemListEntry[],
 ): { percent: number; label: string; note: string } {
+  if (resolveResumeMode(syncCheckpoint) === "archive") {
+    const totalProblems =
+      syncCheckpoint.problemIds?.length ??
+      (profile
+        ? selectProblemsFromProfile(profile, {
+            problemFilter: syncCheckpoint.problemFilter ?? undefined,
+            problemLimit: syncCheckpoint.problemLimit ?? undefined,
+          }).totalProblems
+        : 0);
+    const completedProblemCount = syncCheckpoint.problemIndex ?? 0;
+    const currentProblemId =
+      submissionsCheckpoint?.currentProblemId ??
+      (syncCheckpoint.problemIds && completedProblemCount < syncCheckpoint.problemIds.length
+        ? syncCheckpoint.problemIds[completedProblemCount]
+        : null);
+
+    return {
+      percent: totalProblems > 0 ? Math.max(0, Math.min(100, (completedProblemCount / totalProblems) * 100)) : 0,
+      label: totalProblems > 0 ? `${completedProblemCount}/${totalProblems} 문제` : "문제 아카이브 재개",
+      note:
+        `${syncCheckpoint.selectionSummary ?? "프로필 기준 문제 순회"}` +
+        ` · 현재 문제 ${currentProblemId === null ? "-" : `#${currentProblemId}`}` +
+        ` · 제출 체크포인트 ${submissionsCheckpoint ? "있음" : "없음"}`,
+    };
+  }
+
   if (syncCheckpoint.phase === "profile") {
     return {
       percent: 0,
@@ -1273,7 +1505,7 @@ function resolveResumePhaseIndex(mode: "sync" | "archive", phase: BackupSyncChec
     }
   }
 
-  return phase === "problems" ? 2 : 1;
+  return 2;
 }
 
 function buildResumeActionBody(syncCheckpoint: BackupSyncCheckpoint): Record<string, string> {
@@ -1470,13 +1702,14 @@ async function readProblemListEntries(problemsDir: string): Promise<ProblemListE
       tierLevel: meta?.tierLevel ?? null,
       tierLabel: meta?.tierLabel ?? null,
       submissionCount: meta?.submissionCount ?? null,
+      tagKeys: buildProblemTagKeys(meta),
       tagNames: buildProblemTagNames(meta),
       tagAliases: buildProblemTagAliases(meta),
       problemUrl: `/problems/${problemId}`,
     });
   }
 
-  return results.sort((left, right) => right.problemId - left.problemId);
+  return results.sort((left, right) => left.problemId - right.problemId);
 }
 
 function buildProblemTagNames(meta: ProblemBackupMeta | null): string[] {
@@ -1506,6 +1739,25 @@ function buildProblemTagNames(meta: ProblemBackupMeta | null): string[] {
   }
 
   return names;
+}
+
+function buildProblemTagKeys(meta: ProblemBackupMeta | null): string[] {
+  if (!meta?.tags || !Array.isArray(meta.tags)) {
+    return [];
+  }
+
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of meta.tags) {
+    const normalized = normalizeProblemSearchToken(tag.key);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    keys.push(tag.key);
+  }
+
+  return keys;
 }
 
 function buildProblemTagAliases(meta: ProblemBackupMeta | null): string[] {
@@ -1589,6 +1841,10 @@ function convertProblemSubmissionHistoryToSnapshot(
   };
 }
 
+function buildLocalProblemStatusUrl(problemId: number, username: string): string {
+  return `/status?from_mine=1&problem_id=${problemId}&user_id=${encodeURIComponent(username)}`;
+}
+
 const PROBLEM_SUBMISSION_ROW_INDEX = {
   submissionId: 0,
   problemId: 1,
@@ -1663,7 +1919,7 @@ async function readProblemSubmissionView(
     submissionIndex + 1 < submissions.rows.length
       ? submissions.rows[submissionIndex + 1]?.[PROBLEM_SUBMISSION_ROW_INDEX.submissionId] ?? null
       : null;
-  const submissionsUrl = `/problems/${problemId}/submissions`;
+  const submissionsUrl = buildLocalProblemStatusUrl(problemId, submissions.username);
 
   return {
     username: submissions.username,
@@ -1680,9 +1936,67 @@ async function readProblemSubmissionView(
     code,
     problemUrl: `/problems/${problemId}`,
     submissionsUrl,
-    previousSubmissionUrl: previousSubmissionId === null ? null : `${submissionsUrl}/${previousSubmissionId}`,
-    nextSubmissionUrl: nextSubmissionId === null ? null : `${submissionsUrl}/${nextSubmissionId}`,
+    previousSubmissionUrl: previousSubmissionId === null ? null : `/source/${previousSubmissionId}`,
+    nextSubmissionUrl: nextSubmissionId === null ? null : `/source/${nextSubmissionId}`,
   };
+}
+
+async function findProblemSubmissionView(
+  problemsDir: string,
+  submissionId: number,
+): Promise<{
+  username: string;
+  problemId: number;
+  problemTitle: string | null;
+  submissionId: number;
+  result: string;
+  resultClass: string | null;
+  memoryKb: number | null;
+  timeMs: number | null;
+  language: string;
+  codeLength: number | null;
+  submittedAt: string | null;
+  code: string;
+  problemUrl: string;
+  submissionsUrl: string;
+  previousSubmissionUrl: string | null;
+  nextSubmissionUrl: string | null;
+} | null> {
+  let entries;
+  try {
+    entries = await readdir(problemsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const problemId = Number.parseInt(entry.name, 10);
+    if (!Number.isInteger(problemId)) {
+      continue;
+    }
+
+    const problemDir = path.join(problemsDir, entry.name);
+    const meta = await readOptionalProblemBackupMeta(problemDir);
+    if (!meta) {
+      continue;
+    }
+
+    if (!Array.isArray(meta.sourceFiles)) {
+      continue;
+    }
+
+    if (!meta.sourceFiles.some((sourceFile) => sourceFile.submissionId === submissionId)) {
+      continue;
+    }
+
+    return readProblemSubmissionView(problemDir, problemId, submissionId);
+  }
+
+  return null;
 }
 
 async function readOptionalProblemBackupMeta(problemDir: string): Promise<ProblemBackupMeta | null> {
@@ -1699,12 +2013,49 @@ function rewriteProblemDetailHtml(
   html: string,
   options: {
     problemId: number;
+    problemsUrl: string;
     problemUrl: string;
     submissionsUrl: string;
+    dashboardUrl: string | null;
   },
 ): string {
   const doctype = html.match(/<!doctype[^>]*>/i)?.[0] ?? "";
   const $ = load(html);
+
+  $(".topbar").remove();
+  $("head").append(`
+    <style>
+      body { padding-top: 18px; }
+      @media (max-width: 767px) {
+        body { padding-top: 14px; }
+      }
+    </style>
+  `);
+
+  const navbar = $(".header.no-print .navbar.navbar-default.mega-menu").first();
+  if (navbar.length > 0) {
+    navbar
+      .find(".navbar-header .navbar-brand")
+      .attr("href", options.dashboardUrl ?? options.problemsUrl);
+    navbar.find(".navbar-header .navbar-toggle").remove();
+
+    const navList = navbar.find(".navbar-collapse .nav.navbar-nav").first();
+    if (navList.length > 0) {
+      navList.empty();
+      navList.append(
+        $("<li>").append(
+          $("<a>").attr("href", options.problemsUrl).text("문제 목록"),
+        ),
+      );
+      if (options.dashboardUrl) {
+        navList.append(
+          $("<li>").append(
+            $("<a>").attr("href", options.dashboardUrl).text("대시보드"),
+          ),
+        );
+      }
+    }
+  }
 
   $("ul.problem-menu").each((_, element) => {
     const menu = $(element);
@@ -1885,6 +2236,39 @@ function normalizeProblemSearchToken(value: string): string {
     .replace(/\s+/g, "")
     .replace(/[_-]+/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function buildProblemSearchSuggestions(entries: ProblemListEntry[]): {
+  tags: Array<{ token: string; label: string; count: number }>;
+  tiers: Array<{ token: string; label: string; count: number }>;
+} {
+  const tagCounts = new Map<string, number>();
+  const tierCounts = new Map<string, { count: number; label: string }>();
+
+  for (const entry of entries) {
+    for (const tagKey of entry.tagKeys) {
+      tagCounts.set(tagKey, (tagCounts.get(tagKey) ?? 0) + 1);
+    }
+
+    const tierCode = entry.tierLevel === null ? null : convertTierLevelToCode(entry.tierLevel);
+    if (tierCode) {
+      const previous = tierCounts.get(tierCode);
+      tierCounts.set(tierCode, {
+        count: (previous?.count ?? 0) + 1,
+        label: entry.tierLabel ?? tierCode.toUpperCase(),
+      });
+    }
+  }
+
+  return {
+    tags: [...tagCounts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 40)
+      .map(([token, count]) => ({ token, label: `tag:${token}`, count })),
+    tiers: [...tierCounts.entries()]
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .map(([token, value]) => ({ token, label: `tier:${token} · ${value.label}`, count: value.count })),
+  };
 }
 
 async function readFormBody(request: IncomingMessage): Promise<URLSearchParams> {
@@ -2142,11 +2526,18 @@ function formatArchiveStageStatusLines(
   problemLimit?: number | null,
 ): string[] {
   return [
-    `단계: ${progress.phaseIndex}/${progress.totalPhases} ${formatSyncPhase(progress.phase)}`,
+    "단계: 2/2 문제 아카이브",
     `사용자: ${progress.username}`,
     `프로필 JSON: 사용`,
-    `제출 JSON: 준비`,
-    `문제 디렉터리: 준비`,
+    `문제 선택: ${problemFilter || "전체"}`,
+    "대상 문제: 계산 중",
+    "진행: 0/0 (saved 0, skipped 0)",
+    "현재 문제: -",
+    "현재 단계: 문제 선택",
+    "문제별 제출 수: -",
+    "코드 다운로드: -",
+    `제출 JSON: ${progress.submissionsPath}`,
+    `문제 디렉터리: ${progress.problemsDir}`,
     `문제 필터: ${problemFilter || "전체"}`,
     `문제 수 제한: ${problemLimit === null || problemLimit === undefined ? "없음" : formatNumber(problemLimit)}`,
     "archive 체크포인트: 사용 중",
@@ -2175,11 +2566,33 @@ function formatArchiveSubmissionsStatusLines(
   problemFilter?: string,
   problemLimit?: number | null,
 ): string[] {
+  const totalProblems = progress.selectedProblemCount ?? 0;
+  const completedProblems = progress.completedProblemCount ?? 0;
+  const currentProblemLabel =
+    progress.currentProblemId === null || progress.currentProblemId === undefined
+      ? "-"
+      : `#${progress.currentProblemId}`;
   return [
-    "단계: 1/2 제출 기록 수집",
+    "단계: 2/2 문제 아카이브",
+    `사용자: ${progress.username}`,
+    `프로필 JSON: 사용`,
+    `문제 선택: ${problemFilter || "전체"}`,
+    `대상 문제: ${formatNumber(totalProblems)} / ${formatNumber(totalProblems)}`,
+    `진행: ${formatNumber(completedProblems)}/${formatNumber(totalProblems)} (saved ${formatNumber(completedProblems)}, skipped 0)`,
+    `현재 문제: ${currentProblemLabel}`,
+    "현재 단계: 제출 내역 수집",
+    `문제별 제출 수: ${formatNumber(progress.rowsFetched)}`,
+    "코드 다운로드: -",
+    `페이지: ${formatNumber(progress.pagesFetched)}`,
+    `마지막 제출: ${progress.lastSubmissionId === null ? "-" : `#${progress.lastSubmissionId}`}`,
     `문제 필터: ${problemFilter || "전체"}`,
     `문제 수 제한: ${problemLimit === null || problemLimit === undefined ? "없음" : formatNumber(problemLimit)}`,
-    ...formatSubmissionsStatusLines(progress, progress.estimatedTotalCount, outputPath),
+    `제출 JSON: ${outputPath}`,
+    `다음 딜레이: ${formatRateLimitLabel(
+      progress.nextDelayMs,
+      progress.delayReason,
+      progress.backoffAttempt,
+    )}`,
     "archive 체크포인트: 사용 중",
   ];
 }
@@ -2251,7 +2664,9 @@ function formatArchiveProblemStatusLines(
   outputDir: string,
 ): string[] {
   return [
-    "단계: 2/2 문제 백업",
+    "단계: 2/2 문제 아카이브",
+    `사용자: ${progress.username}`,
+    "프로필 JSON: 사용",
     ...formatProblemStatusLines(progress, outputDir),
     "archive 체크포인트: 사용 중",
   ];
@@ -2797,15 +3212,6 @@ function renderDashboardPage(
 <body>
   <div class="wrapper">
     <div class="header no-print">
-      <div class="topbar">
-        <div class="container">
-          <ul class="loginbar pull-right">
-            <li><a href="https://www.acmicpc.net/register" target="_blank" rel="noreferrer">회원가입</a></li>
-            <li class="topbar-devider"></li>
-            <li><a href="https://www.acmicpc.net/login" target="_blank" rel="noreferrer">로그인</a></li>
-          </ul>
-        </div>
-      </div>
       <div class="navbar navbar-default mega-menu dashboard-nav" role="navigation">
         <div class="container">
           <div class="navbar-header">
@@ -2835,16 +3241,6 @@ function renderDashboardPage(
             <h1>BOJ Backup Dashboard</h1>
             <blockquote class="no-mathjax">
               <span class="dashboard-subtitle">프로필 크롤링과 문제 + 제출코드 크롤링을 분리해서 실행하고, 각 단계는 이어받을 수 있습니다.</span>
-              <div class="tab-v2">
-                <ul class="nav nav-tabs">
-                  <li class="active"><a href="/">대시보드</a></li>
-                  <li><a href="#profile-panel">프로필 크롤링</a></li>
-                  <li><a href="#archive-panel">문제 + 제출코드</a></li>
-                  <li><a href="#artifacts-panel-anchor">저장 결과</a></li>
-                  <li><a href="#task-panel-anchor">현재 작업</a></li>
-                  <li><a href="#log-panel-anchor">최근 로그</a></li>
-                </ul>
-              </div>
             </blockquote>
           </div>
         </div>
@@ -3645,6 +4041,10 @@ function renderProblemsIndexPage(
   options: {
     query: string;
     totalCount: number;
+    suggestions: {
+      tags: Array<{ token: string; label: string; count: number }>;
+      tiers: Array<{ token: string; label: string; count: number }>;
+    };
   },
 ): string {
   const rows = entries.length > 0
@@ -3653,7 +4053,7 @@ function renderProblemsIndexPage(
           (entry) => `
             <tr>
               <td><a href="${escapeHtmlAttr(entry.problemUrl)}">${entry.problemId}</a></td>
-              <td>${escapeHtml(entry.title ?? "-")}</td>
+              <td><a href="${escapeHtmlAttr(entry.problemUrl)}">${escapeHtml(entry.title ?? "-")}</a></td>
               <td>${renderProblemTierCell(entry)}</td>
               <td>${renderProblemTagsCell(entry)}</td>
               <td>${escapeHtml(entry.submissionCount === null ? "-" : formatNumber(entry.submissionCount))}</td>
@@ -3661,6 +4061,41 @@ function renderProblemsIndexPage(
         )
         .join("")
     : `<tr><td colspan="5" class="dashboard-empty">조건에 맞는 문제가 없습니다.</td></tr>`;
+  const queryTokens = options.query.split(/\s+/).filter(Boolean);
+  const queryBadges = queryTokens.length > 0
+    ? queryTokens
+        .map((token) => `<span class="problems-filter-chip active">${escapeHtml(token)}</span>`)
+        .join("")
+    : `<span class="problems-filter-chip muted">전체</span>`;
+  const querySummary = options.query
+    ? `검색어 ${escapeHtml(options.query)} 기준 결과`
+    : "전체 백업 문제를 표시하고 있습니다.";
+  const exampleQueries = [
+    "19581",
+    "트리 tag:lca",
+    "tag:segtree",
+    "tag:dp tier:g3",
+    "tier:d5",
+  ]
+    .map((query) => (
+      `<a class="problems-inline-chip" href="${escapeHtmlAttr(buildProblemsQueryHref(query))}">${escapeHtml(query)}</a>`
+    ))
+    .join("");
+  const tagSuggestionLinks = options.suggestions.tags.length > 0
+    ? options.suggestions.tags
+        .slice(0, 18)
+        .map((item) => (
+          `<a class="problems-inline-chip" href="${escapeHtmlAttr(buildProblemsQueryHref(`tag:${item.token}`))}">${escapeHtml(item.label)} <span>${item.count}</span></a>`
+        ))
+        .join("")
+    : `<span class="problems-empty-inline">추천할 태그가 없습니다.</span>`;
+  const tierSuggestionLinks = options.suggestions.tiers.length > 0
+    ? options.suggestions.tiers
+        .map((item) => (
+          `<a class="problems-inline-chip" href="${escapeHtmlAttr(buildProblemsQueryHref(`tier:${item.token}`))}">${escapeHtml(item.label)} <span>${item.count}</span></a>`
+        ))
+        .join("")
+    : `<span class="problems-empty-inline">추천할 티어가 없습니다.</span>`;
 
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -3670,24 +4105,310 @@ function renderProblemsIndexPage(
   <title>문제 목록</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.2.0/css/bootstrap.min.css">
   <style>
-    body { background: #fff; color: #333; padding: 24px 16px; }
-    .page-wrap { max-width: 1100px; margin: 0 auto; }
-    .meta { color: #666; margin-bottom: 18px; }
+    body.problems-page {
+      background: #f5f7fb;
+      color: #1f2937;
+      padding: 44px 16px 24px;
+    }
+    .page-wrap {
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+    .problems-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      padding: 0 4px;
+    }
+    .problems-topbar-brand {
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+    }
+    .problems-topbar-brand img {
+      display: block;
+      height: 32px;
+      width: auto;
+    }
+    .problems-topbar-link {
+      color: #5b6472;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .problems-topbar-link:hover,
+    .problems-topbar-link:focus {
+      color: #0076c0;
+      text-decoration: none;
+    }
+    .problems-shell {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .problems-sidebar {
+      position: sticky;
+      top: 24px;
+      display: grid;
+      gap: 16px;
+    }
+    .problems-panel,
+    .problems-summary-card,
+    .problems-table-card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 18px;
+      box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+    }
+    .problems-panel {
+      padding: 18px 18px 16px;
+    }
+    .problems-panel-kicker,
+    .problems-side-title,
+    .problems-summary-kicker {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #7c8796;
+    }
+    .problems-panel h1 {
+      margin: 8px 0 10px;
+      font-size: 34px;
+      line-height: 1.05;
+      color: #111827;
+    }
+    .problems-panel p,
+    .problems-summary-note,
+    .search-help,
+    .search-assist-label,
+    .problems-table-meta,
+    .problems-empty-inline {
+      color: #5b6472;
+    }
+    .problems-back-link {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 10px;
+      font-weight: 600;
+      color: #0076c0;
+    }
     .search-form {
-      margin: 18px 0 14px;
-      padding: 14px 16px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      background: #fafafa;
+      margin-top: 14px;
+    }
+    .search-form .input-group {
+      display: flex;
+      width: 100%;
+      border: 1px solid #d6deea;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .search-form .form-control {
+      height: 50px;
+      border: 0;
+      box-shadow: none;
+      padding: 0 16px;
+      font-size: 15px;
+      background: transparent;
+    }
+    .search-form .input-group-btn {
+      width: auto;
+    }
+    .search-form .btn {
+      height: 50px;
+      border: 0;
+      border-radius: 0;
+      padding: 0 20px;
+      background: #1b4f8a;
+      color: #fff;
+      font-weight: 600;
+    }
+    .search-form .btn:hover,
+    .search-form .btn:focus {
+      background: #153e6d;
     }
     .search-help {
-      margin-top: 8px;
-      color: #666;
+      margin-top: 10px;
       font-size: 12px;
     }
     .search-help code {
-      background: #f1f1f1;
-      color: #333;
+      background: #eef3f8;
+      color: #1f2937;
+    }
+    .search-assist {
+      display: none;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #ebeff5;
+    }
+    .search-assist.visible {
+      display: block;
+    }
+    .search-assist-label {
+      display: block;
+      margin-bottom: 8px;
+      color: #666;
+      font-size: 12px;
+    }
+    .search-assist-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .search-assist-chip {
+      border: 1px solid #d5e6f7;
+      background: #f4f9ff;
+      color: #0a5b98;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .search-assist-chip:hover,
+    .search-assist-chip:focus {
+      background: #e3f1ff;
+      outline: none;
+    }
+    .problems-inline-chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .problems-inline-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: #f7faff;
+      border: 1px solid #d7e5f2;
+      color: #215a8d;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .problems-inline-chip span {
+      color: #6d7a88;
+      font-weight: 500;
+    }
+    .problems-main {
+      display: grid;
+      gap: 18px;
+    }
+    .problems-summary-card {
+      padding: 22px 24px;
+    }
+    .problems-summary-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+    }
+    .problems-summary-title {
+      margin: 8px 0 6px;
+      font-size: 34px;
+      line-height: 1;
+      color: #111827;
+    }
+    .problems-summary-note {
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .problems-summary-stats {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .problems-stat-pill {
+      min-width: 118px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: #f8fafc;
+      border: 1px solid #e6edf5;
+    }
+    .problems-stat-pill strong {
+      display: block;
+      font-size: 22px;
+      color: #111827;
+      line-height: 1.1;
+    }
+    .problems-stat-pill span {
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .problems-filter-row {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .problems-filter-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      background: #eff5fb;
+      color: #0f4d84;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .problems-filter-chip.muted {
+      background: #f3f4f6;
+      color: #6b7280;
+    }
+    .problems-table-card {
+      overflow: hidden;
+    }
+    .problems-table-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 20px 24px 14px;
+      border-bottom: 1px solid #edf1f6;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+    }
+    .problems-table-head h2 {
+      margin: 6px 0 0;
+      font-size: 22px;
+      color: #111827;
+    }
+    .problems-table-meta {
+      font-size: 13px;
+      text-align: right;
+    }
+    .problems-table-wrap {
+      padding: 0 18px 18px;
+    }
+    .dashboard-problems-table {
+      margin-bottom: 0;
+      font-size: 14px;
+    }
+    .dashboard-problems-table > thead > tr > th {
+      border-top: 0;
+      border-bottom: 1px solid #edf1f6;
+      color: #55606f;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #fbfcfe;
+    }
+    .dashboard-problems-table > tbody > tr > td {
+      vertical-align: top;
+      border-top: 1px solid #f0f3f7;
+      padding-top: 14px;
+      padding-bottom: 14px;
+    }
+    .dashboard-problems-table > tbody > tr:hover {
+      background: #fbfdff;
     }
     .dashboard-tier-cell {
       display: inline-flex;
@@ -3707,46 +4428,264 @@ function renderProblemsIndexPage(
     }
     .dashboard-tag-chip {
       display: inline-block;
-      padding: 2px 8px;
+      padding: 4px 9px;
       border-radius: 999px;
-      background: #f0f7ff;
+      background: #edf5ff;
       color: #0b65a5;
       font-size: 12px;
       white-space: nowrap;
     }
+    @media (max-width: 1100px) {
+      .problems-shell {
+        grid-template-columns: 1fr;
+      }
+      .problems-sidebar {
+        position: static;
+      }
+    }
+    @media (max-width: 767px) {
+      body.problems-page {
+        padding: 24px 12px 16px;
+      }
+      .problems-panel,
+      .problems-summary-card {
+        padding: 16px;
+      }
+      .problems-summary-head,
+      .problems-table-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .problems-summary-stats {
+        justify-content: flex-start;
+      }
+      .problems-table-wrap {
+        padding: 0 0 12px;
+      }
+    }
   </style>
 </head>
-<body>
+<body class="problems-page">
   <div class="page-wrap">
-    <h1>문제 목록</h1>
-    <p class="meta">출력 디렉터리: ${escapeHtml(problemsDir)} · 총 ${formatNumber(options.totalCount)}개 · 현재 ${formatNumber(entries.length)}개</p>
-    <p><a href="/">대시보드로 돌아가기</a></p>
-    <form class="search-form" action="/problems" method="get">
-      <div class="input-group">
-        <input type="text" class="form-control" name="q" value="${escapeHtmlAttr(options.query)}" placeholder="문제 번호, 제목, tag:segtree, tier:d5">
-        <span class="input-group-btn">
-          <button type="submit" class="btn btn-primary">검색</button>
-        </span>
-      </div>
-      <div class="search-help">
-        예시: <code>19581</code>, <code>트리 tag:lca</code>, <code>tag:segtree</code>, <code>tier:d5</code>, <code>tag:dp tier:g3</code>
-      </div>
-    </form>
-    <div class="table-responsive">
-      <table class="table table-bordered table-striped dashboard-problems-table">
-        <thead>
-          <tr>
-            <th>문제 번호</th>
-            <th>제목</th>
-            <th>티어</th>
-            <th>태그</th>
-            <th>제출 수</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+    <div class="problems-topbar">
+      <a class="problems-topbar-brand" href="/">
+        <img src="https://d2gd6pc034wcta.cloudfront.net/images/logo@2x.png" alt="BOJ">
+      </a>
+      <a class="problems-topbar-link" href="/">대시보드로 돌아가기</a>
+    </div>
+    <div class="problems-shell">
+      <aside class="problems-sidebar">
+        <section class="problems-panel">
+          <span class="problems-panel-kicker">Local Backup</span>
+          <h1>문제 검색</h1>
+          <p>solved.ac 문제 검색 레이아웃을 참고해, 백업한 문제를 태그와 티어 쿼리로 빠르게 탐색할 수 있게 정리했습니다.</p>
+        </section>
+
+        <section class="problems-panel">
+          <span class="problems-side-title">검색</span>
+          <form class="search-form" action="/problems" method="get">
+            <div class="input-group">
+              <input id="problem-search-input" type="text" class="form-control" name="q" value="${escapeHtmlAttr(options.query)}" placeholder="문제 번호, 제목, tag:segtree, tier:d5" autocomplete="off" spellcheck="false">
+              <span class="input-group-btn">
+                <button type="submit" class="btn btn-primary">검색</button>
+              </span>
+            </div>
+            <div id="problem-search-assist" class="search-assist" aria-live="polite">
+              <span id="problem-search-assist-label" class="search-assist-label"></span>
+              <div id="problem-search-assist-list" class="search-assist-list"></div>
+            </div>
+            <div class="search-help">
+              예시: <code>19581</code>, <code>트리 tag:lca</code>, <code>tag:segtree</code>, <code>tier:d5</code>, <code>tag:dp tier:g3</code>
+            </div>
+          </form>
+        </section>
+
+        <section class="problems-panel">
+          <span class="problems-side-title">쿼리 문법</span>
+          <div class="problems-inline-chip-list">
+            ${exampleQueries}
+          </div>
+        </section>
+
+        <section class="problems-panel">
+          <span class="problems-side-title">인기 태그</span>
+          <div class="problems-inline-chip-list">
+            ${tagSuggestionLinks}
+          </div>
+        </section>
+
+        <section class="problems-panel">
+          <span class="problems-side-title">티어 바로가기</span>
+          <div class="problems-inline-chip-list">
+            ${tierSuggestionLinks}
+          </div>
+        </section>
+      </aside>
+
+      <main class="problems-main">
+        <section class="problems-summary-card">
+          <div class="problems-summary-head">
+            <div>
+              <span class="problems-summary-kicker">필터</span>
+              <h2 class="problems-summary-title">${formatNumber(entries.length)}문제</h2>
+              <div class="problems-summary-note">${querySummary}</div>
+            </div>
+            <div class="problems-summary-stats">
+              <div class="problems-stat-pill">
+                <strong>${formatNumber(options.totalCount)}</strong>
+                <span>백업된 전체 문제</span>
+              </div>
+              <div class="problems-stat-pill">
+                <strong>${formatNumber(entries.length)}</strong>
+                <span>현재 검색 결과</span>
+              </div>
+            </div>
+          </div>
+          <div class="problems-filter-row">
+            ${queryBadges}
+          </div>
+        </section>
+
+        <section class="problems-table-card">
+          <div class="problems-table-head">
+            <div>
+              <span class="problems-summary-kicker">결과</span>
+              <h2>백업 문제 목록</h2>
+            </div>
+            <div class="problems-table-meta">
+              문제 폴더 기준 정렬 · 출력 디렉터리 ${escapeHtml(problemsDir)}
+            </div>
+          </div>
+          <div class="problems-table-wrap table-responsive">
+            <table class="table dashboard-problems-table">
+              <thead>
+                <tr>
+                  <th>문제 번호</th>
+                  <th>제목</th>
+                  <th>티어</th>
+                  <th>태그</th>
+                  <th>제출 수</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </section>
+      </main>
     </div>
   </div>
+  <script id="problem-search-suggestions" type="application/json">${JSON.stringify(options.suggestions).replace(/</g, "\\u003c")}</script>
+  <script>
+    (function () {
+      const input = document.getElementById("problem-search-input");
+      const assist = document.getElementById("problem-search-assist");
+      const assistLabel = document.getElementById("problem-search-assist-label");
+      const assistList = document.getElementById("problem-search-assist-list");
+      const rawSuggestions = document.getElementById("problem-search-suggestions");
+      if (!input || !assist || !assistLabel || !assistList || !rawSuggestions) {
+        return;
+      }
+
+      let suggestions = { tags: [], tiers: [] };
+      try {
+        suggestions = JSON.parse(rawSuggestions.textContent || "{}");
+      } catch (error) {
+        console.error("problem search suggestions parse failed", error);
+      }
+
+      function normalizeToken(value) {
+        return value
+          .toLowerCase()
+          .normalize("NFKC")
+          .replace(/\\s+/g, "")
+          .replace(/[_-]+/g, "")
+          .replace(/[^\\p{L}\\p{N}]+/gu, "");
+      }
+
+      function getTokenRange(value, cursor) {
+        let start = cursor;
+        let end = cursor;
+        while (start > 0 && !/\\s/.test(value.charAt(start - 1))) {
+          start -= 1;
+        }
+        while (end < value.length && !/\\s/.test(value.charAt(end))) {
+          end += 1;
+        }
+        return { start, end, token: value.slice(start, end) };
+      }
+
+      function replaceToken(nextToken) {
+        const cursor = input.selectionStart || input.value.length;
+        const range = getTokenRange(input.value, cursor);
+        const before = input.value.slice(0, range.start);
+        const after = input.value.slice(range.end);
+        const prefix = before && !/\\s$/.test(before) ? before + " " : before;
+        const suffix = after && !/^\\s/.test(after) ? " " + after : after;
+        input.value = prefix + nextToken + suffix;
+        const nextCursor = (prefix + nextToken).length;
+        input.focus();
+        input.setSelectionRange(nextCursor, nextCursor);
+        renderAssist();
+      }
+
+      function renderAssist() {
+        const cursor = input.selectionStart || input.value.length;
+        const range = getTokenRange(input.value, cursor);
+        const token = range.token || "";
+        const tokenLower = token.toLowerCase();
+        let source = [];
+        let label = "";
+        let prefix = "";
+
+        if (tokenLower.startsWith("tag:")) {
+          source = Array.isArray(suggestions.tags) ? suggestions.tags : [];
+          label = "태그 필터 추천";
+          prefix = normalizeToken(token.slice(4));
+        } else if (tokenLower.startsWith("tier:")) {
+          source = Array.isArray(suggestions.tiers) ? suggestions.tiers : [];
+          label = "티어 필터 추천";
+          prefix = normalizeToken(token.slice(5));
+        } else {
+          assist.classList.remove("visible");
+          assistLabel.textContent = "";
+          assistList.innerHTML = "";
+          return;
+        }
+
+        const items = source
+          .filter((item) => !prefix || normalizeToken(item.token).includes(prefix))
+          .slice(0, 8);
+
+        if (items.length === 0) {
+          assist.classList.remove("visible");
+          assistLabel.textContent = "";
+          assistList.innerHTML = "";
+          return;
+        }
+
+        assist.classList.add("visible");
+        assistLabel.textContent = label;
+        assistList.innerHTML = "";
+
+        for (const item of items) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "search-assist-chip";
+          button.textContent = item.label + " (" + item.count + ")";
+          button.addEventListener("click", function () {
+            const keyword = tokenLower.startsWith("tag:") ? "tag:" + item.token : "tier:" + item.token;
+            replaceToken(keyword);
+          });
+          assistList.appendChild(button);
+        }
+      }
+
+      input.addEventListener("input", renderAssist);
+      input.addEventListener("click", renderAssist);
+      input.addEventListener("keyup", renderAssist);
+      renderAssist();
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -3770,17 +4709,16 @@ function renderProblemTagsCell(entry: ProblemListEntry): string {
     return "-";
   }
 
-  const visibleTags = entry.tagNames.slice(0, 4);
-  const hiddenCount = Math.max(entry.tagNames.length - visibleTags.length, 0);
-  const chips = visibleTags
+  const chips = entry.tagNames
     .map((tagName) => `<span class="dashboard-tag-chip">${escapeHtml(tagName)}</span>`)
     .join("");
-  const moreChip =
-    hiddenCount > 0
-      ? `<span class="dashboard-tag-chip">+${hiddenCount}</span>`
-      : "";
 
-  return `<div class="dashboard-tag-list">${chips}${moreChip}</div>`;
+  return `<div class="dashboard-tag-list">${chips}</div>`;
+}
+
+function buildProblemsQueryHref(query: string): string {
+  const trimmed = query.trim();
+  return trimmed ? `/problems?q=${encodeURIComponent(trimmed)}` : "/problems";
 }
 
 function buildTierIconUrl(tierLevel: number): string {
@@ -3796,7 +4734,7 @@ function renderDashboardErrorPage(message: string): string {
   <title>Error</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.2.0/css/bootstrap.min.css">
 </head>
-<body style="padding:24px 16px;">
+<body style="padding:44px 16px 24px;">
   <div class="container">
     <div class="alert alert-warning">${escapeHtml(message)}</div>
     <p><a href="/">대시보드로 돌아가기</a></p>

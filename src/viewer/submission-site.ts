@@ -43,6 +43,7 @@ export interface StartedSubmissionsViewer {
 
 export interface RenderSubmissionsStatusOptions {
   localProfileOrigin?: string | null;
+  dashboardUrl?: string | null;
   problemNav?: ReactRenderSubmissionsStatusOptions["problemNav"];
 }
 
@@ -288,7 +289,7 @@ function renderShell(args: {
 
 function renderTopChrome(
   origin: string,
-  activeNav: "status",
+  _activeNav: "status",
   username: string,
   options: RenderSubmissionsStatusOptions,
 ): string {
@@ -297,15 +298,6 @@ function renderTopChrome(
     : "https://www.acmicpc.net/ranklist";
   return `
     <div class="header no-print">
-      <div class="topbar">
-        <div class="container">
-          <ul class="loginbar pull-right">
-            <li><a href="https://www.acmicpc.net/register" target="_blank" rel="noreferrer">회원가입</a></li>
-            <li class="topbar-devider"></li>
-            <li><a href="https://www.acmicpc.net/login" target="_blank" rel="noreferrer">로그인</a></li>
-          </ul>
-        </div>
-      </div>
       <div class="navbar navbar-default mega-menu viewer-nav" role="navigation">
         <div class="container">
           <div class="navbar-header">
@@ -315,15 +307,12 @@ function renderTopChrome(
           </div>
           <div class="collapse navbar-collapse navbar-responsive-collapse">
             <ul class="nav navbar-nav">
-              <li><a href="https://www.acmicpc.net/problemset" target="_blank" rel="noreferrer">문제</a></li>
-              <li><a href="https://www.acmicpc.net/workbook/top" target="_blank" rel="noreferrer">문제집</a></li>
-              <li><a href="https://www.acmicpc.net/contest/official/list" target="_blank" rel="noreferrer">대회</a></li>
-              <li class="active"><a href="${escapeHtml(`${origin}/status`)}">채점 현황</a></li>
-              <li><a href="${escapeHtml(profileUrl)}"${options.localProfileOrigin ? "" : ' target="_blank" rel="noreferrer"'}>랭킹</a></li>
-              <li><a href="https://www.acmicpc.net/board/list/all" target="_blank" rel="noreferrer">게시판</a></li>
-              <li><a href="https://www.acmicpc.net/group/list/all" target="_blank" rel="noreferrer">그룹</a></li>
+              ${options.localProfileOrigin ? `<li><a href="${escapeHtml(`${options.localProfileOrigin}/user/${encodeURIComponent(username)}`)}">정보</a></li>` : ""}
+              ${options.localProfileOrigin ? `<li><a href="${escapeHtml(`${options.localProfileOrigin}/user/language/${encodeURIComponent(username)}`)}">언어</a></li>` : ""}
+              <li class="active"><a href="${escapeHtml(`${origin}/status`)}">제출</a></li>
+              <li><a href="${escapeHtml(profileUrl)}"${options.localProfileOrigin ? "" : ' target="_blank" rel="noreferrer"'}>원본 프로필</a></li>
+              ${options.dashboardUrl ? `<li><a href="${escapeHtml(options.dashboardUrl)}">대시보드</a></li>` : ""}
             </ul>
-            <span class="navbar-text viewer-topbar-note">local submissions viewer</span>
           </div>
         </div>
       </div>

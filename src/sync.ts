@@ -2,6 +2,7 @@ import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import path from "node:path";
 
 import {
+  BOJ_USER_SUBMISSION_COLUMNS,
   BojSessionClient,
   type BojUserSnapshot,
   type BojUserSubmissionFetchProgress,
@@ -11,6 +12,9 @@ import {
 import { ConfigurationError, StopRequestedError } from "./errors.js";
 import {
   backupProblemsFromSubmissions,
+  backupProblemFromRows,
+  isProblemBackupComplete,
+  readProblemSubmissionHistory,
   type ProblemBackupProgress,
   type ProblemBackupResult,
 } from "./problem-backup.js";
@@ -34,6 +38,10 @@ export interface BackupSyncCheckpoint {
   submissionLimit?: number | null;
   problemFilter?: string | null;
   problemLimit?: number | null;
+  problemIds?: number[] | null;
+  availableProblemCount?: number | null;
+  selectionSummary?: string | null;
+  problemIndex?: number | null;
 }
 
 export interface BackupSyncStageProgress {
@@ -386,25 +394,69 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     args.problemLimit,
     "problemLimit",
   );
-  let startPhase: BackupSyncPhase = syncCheckpoint?.phase ?? "submissions";
-  if (startPhase === "profile") {
-    startPhase = "submissions";
-    args.onLog?.("profile 단계는 이미 선행 작업이므로 제출 기록 단계부터 진행");
+
+  const problemSelection = selectProblemsFromProfile(profileSnapshot, {
+    problemFilter,
+  });
+  if (problemSelection.problemIds.length === 0) {
+    throw new ConfigurationError("No problems selected from profile snapshot.");
   }
 
-  if (startPhase === "problems" && !(await fileExists(submissionsPath))) {
-    startPhase = "submissions";
-    args.onLog?.("submissions.json 이 없어 제출 기록 단계부터 다시 진행");
+  const archiveSelection = await buildArchiveProblemSelection(
+    problemSelection.problemIds,
+    problemsDir,
+    {
+      overwriteProblems: args.overwriteProblems ?? false,
+      problemFilter,
+      problemLimit,
+    },
+  );
+  const selectedProblemIds = resolveResumeProblemIds(
+    syncCheckpoint?.problemIds,
+    archiveSelection.targetProblemIds,
+    problemSelection.problemIds,
+  );
+  const availableProblemCount =
+    syncCheckpoint?.availableProblemCount ?? problemSelection.availableProblems;
+  const selectionSummary =
+    syncCheckpoint?.selectionSummary ?? archiveSelection.selectionSummary;
+  let problemIndex = syncCheckpoint?.problemIndex ?? 0;
+  if (problemIndex < 0 || problemIndex > selectedProblemIds.length) {
+    problemIndex = 0;
   }
 
-  let submissionsSnapshot =
-    startPhase === "problems" ? await readOptionalSubmissionsSnapshot(submissionsPath) : null;
-  if (startPhase === "problems" && !submissionsSnapshot) {
-    startPhase = "submissions";
-    args.onLog?.("기존 submissions.json 을 읽을 수 없어 제출 기록 단계부터 다시 진행");
+  const existingSubmissionsSnapshot = resume
+    ? await readOptionalSubmissionsSnapshot(submissionsPath)
+    : null;
+  const seededArchiveRows = await rebuildArchiveRowsFromArchivedProblems(
+    username,
+    problemSelection.problemIds,
+    problemsDir,
+  );
+  const revalidatedProblemIndex = await resolveArchiveProblemIndex(
+    selectedProblemIds,
+    problemIndex,
+    problemsDir,
+  );
+  if (revalidatedProblemIndex !== problemIndex) {
+    args.onLog?.(
+      `resume 재검증: ${problemIndex}번째 문제까지 복원하지 못해 ${revalidatedProblemIndex}번째 문제부터 다시 진행`,
+    );
+    problemIndex = revalidatedProblemIndex;
   }
 
-  const saveSyncCheckpoint = async (phase: BackupSyncPhase) => {
+  let aggregateRows = seededArchiveRows;
+  let pagesFetched =
+    existingSubmissionsSnapshot?.pagesFetched ?? 0;
+  let completedProblems = problemIndex;
+  let savedProblems = problemIndex;
+  let skippedProblems = 0;
+  let totalSourceFiles = aggregateRows.length;
+  let savedSourceFiles = aggregateRows.length;
+  let skippedSourceFiles = 0;
+  const knownExistingProblems = archiveSelection.knownExistingProblems;
+
+  const saveSyncCheckpoint = async () => {
     await writeJsonFile(checkpointPath, {
       kind: "boj-sync-checkpoint",
       version: 1,
@@ -413,70 +465,22 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
       requestedHandle: args.handle ?? null,
       startedAt,
       updatedAt: new Date().toISOString(),
-      phase,
+      phase: "problems",
       profilePath,
       submissionsPath,
       problemsDir,
       submissionsCheckpointPath,
       problemFilter: problemFilter ?? null,
       problemLimit: problemLimit ?? null,
+      problemIds: selectedProblemIds,
+      availableProblemCount,
+      selectionSummary,
+      problemIndex,
     } satisfies BackupSyncCheckpoint);
   };
 
-  if (startPhase === "submissions") {
-    throwIfStopRequested(args.shouldStop);
-    await saveSyncCheckpoint("submissions");
-    args.onStage?.({
-      phase: "submissions",
-      phaseIndex: 1,
-      totalPhases: 2,
-      username,
-      profilePath,
-      submissionsPath,
-      problemsDir,
-      checkpointPath,
-      submissionsCheckpointPath,
-    });
-
-    const submissionsCheckpoint = resume
-      ? await readSubmissionsCheckpoint(submissionsCheckpointPath, username)
-      : null;
-    if (submissionsCheckpoint) {
-      args.onLog?.(
-        `제출 기록 resume: ${submissionsCheckpoint.totalCount} rows / ${submissionsCheckpoint.pagesFetched} pages (${submissionsCheckpointPath})`,
-      );
-    }
-
-    const problemSelection = selectProblemsFromProfile(profileSnapshot, {
-      problemFilter,
-      problemLimit,
-    });
-
-    if (problemSelection.problemIds.length === 0) {
-      throw new ConfigurationError("No problems selected from profile snapshot.");
-    }
-
-    submissionsSnapshot = await args.client.fetchUserSubmissionsForProblems(username, problemSelection.problemIds, {
-      availableProblemCount: problemSelection.availableProblems,
-      selectionSummary: problemSelection.selectionSummary,
-      resumeFrom: submissionsCheckpoint,
-      onProgress: args.onSubmissionsProgress,
-      shouldStop: args.shouldStop,
-      onCheckpoint: async (nextCheckpoint) => {
-        await writeJsonFile(submissionsCheckpointPath, nextCheckpoint);
-        await saveSyncCheckpoint("submissions");
-      },
-    });
-
-    await writeJsonFile(submissionsPath, submissionsSnapshot);
-    await removeFileIfExists(submissionsCheckpointPath);
-    args.onLog?.(`제출 기록 JSON 저장 완료: ${submissionsPath}`);
-    startPhase = "problems";
-    throwIfStopRequested(args.shouldStop);
-  }
-
   throwIfStopRequested(args.shouldStop);
-  await saveSyncCheckpoint("problems");
+  await saveSyncCheckpoint();
   args.onStage?.({
     phase: "problems",
     phaseIndex: 2,
@@ -488,21 +492,172 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     checkpointPath,
     submissionsCheckpointPath,
   });
+  await writeArchiveSubmissionsSnapshot(
+    submissionsPath,
+    username,
+    problemSelection.problemIds,
+    availableProblemCount,
+    selectionSummary,
+    aggregateRows,
+    pagesFetched,
+  );
+  if (selectedProblemIds.length === 0) {
+    args.onLog?.("추가로 백업할 미백업 문제가 없어 현재 백업 상태만 정리하고 종료");
+  }
 
-  const problemResult = await backupProblemsFromSubmissions({
-    client: args.client,
-    inputPath: submissionsPath,
+  while (problemIndex < selectedProblemIds.length) {
+    throwIfStopRequested(args.shouldStop);
+    const problemId = selectedProblemIds[problemIndex];
+    const problemDir = path.join(problemsDir, String(problemId));
+
+    if (!args.overwriteProblems && (await isProblemBackupComplete(problemsDir, problemId))) {
+      const localHistory = await readProblemSubmissionHistory(problemDir);
+      if (localHistory) {
+        skippedProblems += 1;
+        completedProblems += 1;
+        skippedSourceFiles += localHistory.rows.length;
+
+        const rateLimit = args.client.getRateLimitSnapshot();
+        args.onProblemProgress?.({
+          username,
+          outputDir: problemsDir,
+          availableProblems: availableProblemCount,
+          totalProblems: selectedProblemIds.length,
+          selectionSummary,
+          knownExistingProblems,
+          completedProblems,
+          savedProblems,
+          skippedProblems,
+          phase: "skip-existing",
+          currentProblemId: problemId,
+          currentProblemTitle: localHistory.title,
+          currentProblemDir: problemDir,
+          currentSubmissionCount: localHistory.rows.length,
+          currentSubmissionId: null,
+          currentSourceIndex: null,
+          totalSourceFiles: localHistory.rows.length,
+          savedSourceFiles,
+          skippedSourceFiles,
+          nextDelayMs: rateLimit.nextDelayMs,
+          delayReason: rateLimit.delayReason,
+          backoffAttempt: rateLimit.backoffAttempt,
+        });
+
+        await writeArchiveSubmissionsSnapshot(
+          submissionsPath,
+          username,
+          problemSelection.problemIds,
+          availableProblemCount,
+          selectionSummary,
+          aggregateRows,
+          pagesFetched,
+        );
+        problemIndex += 1;
+        await saveSyncCheckpoint();
+        continue;
+      }
+    }
+
+    const submissionsCheckpoint =
+      resume && (await fileExists(submissionsCheckpointPath))
+        ? await readSubmissionsCheckpoint(submissionsCheckpointPath, username)
+        : null;
+    const activeSubmissionsCheckpoint =
+      submissionsCheckpoint?.currentProblemId === problemId &&
+      Array.isArray(submissionsCheckpoint.problemIds) &&
+      submissionsCheckpoint.problemIds.length === 1 &&
+      submissionsCheckpoint.problemIds[0] === problemId
+        ? submissionsCheckpoint
+        : null;
+
+    if (submissionsCheckpoint && !activeSubmissionsCheckpoint) {
+      args.onLog?.(
+        `기존 제출 체크포인트 형식이 현재 문제 단위 resume과 맞지 않아 문제 #${problemId}부터 새로 수집`,
+      );
+      await removeFileIfExists(submissionsCheckpointPath);
+    } else if (activeSubmissionsCheckpoint) {
+      args.onLog?.(
+        `문제 #${problemId} 제출 기록 resume: ${activeSubmissionsCheckpoint.totalCount} rows / ${activeSubmissionsCheckpoint.pagesFetched} pages (${submissionsCheckpointPath})`,
+      );
+    }
+
+    const problemSubmissions = await args.client.fetchUserSubmissionsForProblem(username, problemId, {
+      availableProblemCount,
+      selectionSummary,
+      selectedProblemCount: selectedProblemIds.length,
+      completedProblemCount: completedProblems,
+      resumeFrom: activeSubmissionsCheckpoint,
+      onProgress: args.onSubmissionsProgress,
+      shouldStop: args.shouldStop,
+      onCheckpoint: async (nextCheckpoint) => {
+        await writeJsonFile(submissionsCheckpointPath, nextCheckpoint);
+        await saveSyncCheckpoint();
+      },
+    });
+
+    const backupResult = await backupProblemFromRows({
+      client: args.client,
+      username,
+      outputDir: problemsDir,
+      problemId,
+      title: problemSubmissions.rows[0]?.[2] ?? null,
+      rows: problemSubmissions.rows,
+      availableProblems: availableProblemCount,
+      totalProblems: selectedProblemIds.length,
+      selectionSummary,
+      knownExistingProblems,
+      completedProblems,
+      savedProblems,
+      skippedProblems,
+      savedSourceFiles,
+      skippedSourceFiles,
+      onProgress: args.onProblemProgress,
+      shouldStop: args.shouldStop,
+    });
+
+    aggregateRows.push(...problemSubmissions.rows);
+    aggregateRows.sort((left, right) => right[0] - left[0]);
+    pagesFetched += problemSubmissions.pagesFetched;
+    totalSourceFiles += backupResult.totalSourceFiles;
+    savedSourceFiles += backupResult.savedSourceFiles;
+    skippedSourceFiles += backupResult.skippedSourceFiles;
+    savedProblems += 1;
+    completedProblems += 1;
+
+    await writeArchiveSubmissionsSnapshot(
+      submissionsPath,
+      username,
+      problemSelection.problemIds,
+      availableProblemCount,
+      selectionSummary,
+      aggregateRows,
+      pagesFetched,
+    );
+    await removeFileIfExists(submissionsCheckpointPath);
+    problemIndex += 1;
+    await saveSyncCheckpoint();
+  }
+
+  const problemResult: ProblemBackupResult = {
+    username,
     outputDir: problemsDir,
-    overwrite: args.overwriteProblems,
-    onProgress: args.onProblemProgress,
-    shouldStop: args.shouldStop,
-  });
+    availableProblems: availableProblemCount,
+    totalProblems: selectedProblemIds.length,
+    selectionSummary,
+    savedProblems,
+    skippedProblems,
+    totalSourceFiles,
+    savedSourceFiles,
+    skippedSourceFiles,
+  };
 
   await removeFileIfExists(checkpointPath);
+  await removeFileIfExists(submissionsCheckpointPath);
   args.onLog?.(
     `문제 백업 완료: saved ${problemResult.savedProblems}, existing ${problemResult.skippedProblems}`,
   );
 
+  const submissionsSnapshot = await readOptionalSubmissionsSnapshot(submissionsPath);
   if (!submissionsSnapshot) {
     throw new ConfigurationError("Submissions snapshot is missing after archive completed.");
   }
@@ -627,7 +782,7 @@ export function formatSyncPhase(phase: BackupSyncPhase): string {
     case "submissions":
       return "제출 기록 수집";
     case "problems":
-      return "문제 백업";
+      return "문제 아카이브";
   }
 }
 
@@ -789,6 +944,175 @@ function isSubmissionsSnapshot(value: unknown): value is BojUserSubmissionsSnaps
     Array.isArray(snapshot.columns) &&
     Array.isArray(snapshot.rows)
   );
+}
+
+function resolveResumeProblemIds(
+  checkpointProblemIds: number[] | null | undefined,
+  selectedProblemIds: number[],
+  availableProblemIds: number[],
+): number[] {
+  if (!checkpointProblemIds) {
+    return selectedProblemIds;
+  }
+
+  const availableProblemSet = new Set(availableProblemIds);
+  const isValidSelection = checkpointProblemIds.every((problemId) => availableProblemSet.has(problemId));
+  const isAscending =
+    checkpointProblemIds.every((problemId, index) => index === 0 || checkpointProblemIds[index - 1] < problemId);
+
+  if (!isValidSelection || !isAscending) {
+    throw new ConfigurationError(
+      "Checkpoint problem selection does not match the current profile selection. Use --no-resume to start over.",
+    );
+  }
+
+  return checkpointProblemIds;
+}
+
+async function rebuildArchiveRowsFromArchivedProblems(
+  username: string,
+  selectedProblemIds: number[],
+  problemsDir: string,
+): Promise<BojUserSubmissionsSnapshot["rows"]> {
+  const rows: BojUserSubmissionsSnapshot["rows"] = [];
+
+  for (const problemId of selectedProblemIds) {
+    const problemDir = path.join(problemsDir, String(problemId));
+    const history = await readProblemSubmissionHistory(problemDir);
+    if (history && history.username === username) {
+      rows.push(...history.rows);
+    }
+  }
+
+  rows.sort((left, right) => right[0] - left[0]);
+  return rows;
+}
+
+async function resolveArchiveProblemIndex(
+  selectedProblemIds: number[],
+  requestedProblemIndex: number,
+  problemsDir: string,
+): Promise<number> {
+  let problemIndex = requestedProblemIndex;
+
+  for (let index = 0; index < requestedProblemIndex; index += 1) {
+    const problemId = selectedProblemIds[index];
+    if (problemId === undefined) {
+      problemIndex = index;
+      break;
+    }
+
+    if (!(await isProblemBackupComplete(problemsDir, problemId))) {
+      problemIndex = index;
+      break;
+    }
+  }
+
+  return problemIndex;
+}
+
+async function buildArchiveProblemSelection(
+  problemIds: number[],
+  problemsDir: string,
+  options: {
+    overwriteProblems: boolean;
+    problemFilter?: string;
+    problemLimit?: number;
+  },
+): Promise<{
+  targetProblemIds: number[];
+  knownExistingProblems: number;
+  selectionSummary: string;
+}> {
+  const targetProblemIds: number[] = [];
+  let knownExistingProblems = 0;
+
+  for (const problemId of problemIds) {
+    const alreadyBackedUp = await isProblemBackupComplete(problemsDir, problemId);
+    if (alreadyBackedUp) {
+      knownExistingProblems += 1;
+    }
+
+    if (!options.overwriteProblems && alreadyBackedUp) {
+      continue;
+    }
+
+    if (options.problemLimit !== undefined && options.problemLimit !== null) {
+      if (targetProblemIds.length >= options.problemLimit) {
+        continue;
+      }
+    }
+
+    targetProblemIds.push(problemId);
+  }
+
+  return {
+    targetProblemIds,
+    knownExistingProblems,
+    selectionSummary: buildArchiveSelectionSummary(
+      options.problemFilter,
+      options.problemLimit,
+      options.overwriteProblems,
+    ),
+  };
+}
+
+function buildArchiveSelectionSummary(
+  problemFilter: string | undefined,
+  problemLimit: number | undefined,
+  overwriteProblems: boolean,
+): string {
+  const summaryParts: string[] = [];
+  const normalizedFilter = problemFilter?.trim();
+
+  if (normalizedFilter) {
+    summaryParts.push(`문제 번호 ${normalizedFilter}`);
+  }
+
+  if (problemLimit !== undefined && problemLimit !== null) {
+    summaryParts.push(
+      overwriteProblems
+        ? `문제 번호 오름차순 최대 ${problemLimit}문제`
+        : `문제 번호 오름차순 미백업 최대 ${problemLimit}문제`,
+    );
+  } else {
+    summaryParts.push(
+      overwriteProblems ? "문제 번호 오름차순 전체" : "문제 번호 오름차순 미백업 전체",
+    );
+  }
+
+  if (overwriteProblems) {
+    summaryParts.push("overwrite");
+  }
+
+  return summaryParts.join(" · ");
+}
+
+async function writeArchiveSubmissionsSnapshot(
+  submissionsPath: string,
+  username: string,
+  problemIds: number[],
+  availableProblemCount: number,
+  selectionSummary: string,
+  rows: BojUserSubmissionsSnapshot["rows"],
+  pagesFetched: number,
+): Promise<void> {
+  const sortedRows = [...rows].sort((left, right) => right[0] - left[0]);
+  await writeJsonFile(submissionsPath, {
+    username,
+    fetchedAt: new Date().toISOString(),
+    sourceUrl: new URL(`status?user_id=${encodeURIComponent(username)}`, "https://www.acmicpc.net").toString(),
+    mode: "problem-status",
+    limitCount: null,
+    estimatedTotalCount: null,
+    problemIds,
+    availableProblemCount,
+    selectionSummary,
+    totalCount: sortedRows.length,
+    pagesFetched,
+    columns: BOJ_USER_SUBMISSION_COLUMNS,
+    rows: sortedRows,
+  } satisfies BojUserSubmissionsSnapshot);
 }
 
 function addPathSuffix(filePath: string, suffix: string): string {

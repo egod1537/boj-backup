@@ -22,6 +22,17 @@ const PROFILE_STYLE_LINKS = [
 const FONT_HREF =
   "https://fonts.googleapis.com/css?family=Noto+Sans+KR:400,700|Open+Sans:400,400i,700,700i|Source+Code+Pro&subset=korean";
 
+const GLOBAL_VIEWER_STYLE = `
+  body {
+    padding-top: 18px;
+  }
+  @media (max-width: 767px) {
+    body {
+      padding-top: 14px;
+    }
+  }
+`;
+
 export const BOJ_APPLE_TOUCH_ICON_URL = "https://www.acmicpc.net/apple-touch-icon.png";
 export const BOJ_FAVICON_32_URL = "https://www.acmicpc.net/favicon-32x32.png";
 export const BOJ_FAVICON_16_URL = "https://www.acmicpc.net/favicon-16x16.png";
@@ -64,6 +75,7 @@ class ViewerDocumentMarkup extends PureComponent<ViewerDocumentProps> {
             <link key={href} rel="stylesheet" href={href} />
           ))}
           <link href={FONT_HREF} rel="stylesheet" />
+          <style dangerouslySetInnerHTML={{ __html: GLOBAL_VIEWER_STYLE }} />
           {styleText ? <style dangerouslySetInnerHTML={{ __html: styleText }} /> : null}
         </head>
         <body>

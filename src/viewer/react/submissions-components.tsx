@@ -10,6 +10,7 @@ import {
 
 export interface ReactRenderSubmissionsStatusOptions {
   localProfileOrigin?: string | null;
+  dashboardUrl?: string | null;
   problemNav?: {
     problemId: number;
     problemTitle?: string | null;
@@ -33,15 +34,6 @@ export class SubmissionsTopChrome extends PureComponent<{
 
     return (
       <div className="header no-print">
-        <div className="topbar">
-          <div className="container">
-            <ul className="loginbar pull-right">
-              <li><a href="https://www.acmicpc.net/register" target="_blank" rel="noreferrer">회원가입</a></li>
-              <li className="topbar-devider" />
-              <li><a href="https://www.acmicpc.net/login" target="_blank" rel="noreferrer">로그인</a></li>
-            </ul>
-          </div>
-        </div>
         <div className="navbar navbar-default mega-menu viewer-nav" role="navigation">
           <div className="container">
             <div className="navbar-header">
@@ -56,19 +48,28 @@ export class SubmissionsTopChrome extends PureComponent<{
             </div>
             <div className="collapse navbar-collapse navbar-responsive-collapse">
               <ul className="nav navbar-nav">
-                <li><a href="https://www.acmicpc.net/problemset" target="_blank" rel="noreferrer">문제</a></li>
-                <li><a href="https://www.acmicpc.net/workbook/top" target="_blank" rel="noreferrer">문제집</a></li>
-                <li><a href="https://www.acmicpc.net/contest/official/list" target="_blank" rel="noreferrer">대회</a></li>
-                <li className="active"><a href={`${origin}/status`}>채점 현황</a></li>
+                {options.localProfileOrigin ? (
+                  <li>
+                    <a href={`${options.localProfileOrigin}/user/${encodeURIComponent(username)}`}>정보</a>
+                  </li>
+                ) : null}
+                {options.localProfileOrigin ? (
+                  <li>
+                    <a href={`${options.localProfileOrigin}/user/language/${encodeURIComponent(username)}`}>언어</a>
+                  </li>
+                ) : null}
+                <li className="active"><a href={`${origin}/status`}>제출</a></li>
                 <li>
                   <a href={profileUrl} target={options.localProfileOrigin ? undefined : "_blank"} rel={options.localProfileOrigin ? undefined : "noreferrer"}>
-                    랭킹
+                    원본 프로필
                   </a>
                 </li>
-                <li><a href="https://www.acmicpc.net/board/list/all" target="_blank" rel="noreferrer">게시판</a></li>
-                <li><a href="https://www.acmicpc.net/group/list/all" target="_blank" rel="noreferrer">그룹</a></li>
+                {options.dashboardUrl ? (
+                  <li>
+                    <a href={options.dashboardUrl}>대시보드</a>
+                  </li>
+                ) : null}
               </ul>
-              <span className="navbar-text viewer-topbar-note">local submissions viewer</span>
             </div>
           </div>
         </div>
@@ -83,7 +84,7 @@ export class StatusTable extends PureComponent<{
 }> {
   public render(): JSX.Element {
     const { snapshot, options } = this.props;
-    const visibleColumns = snapshot.columns.filter((column) => column.visible);
+    const visibleColumns = buildVisibleStatusColumns(snapshot);
     return (
       <table className="table table-striped table-bordered" id="status-table">
         <thead>
@@ -106,6 +107,32 @@ export class StatusTable extends PureComponent<{
       </table>
     );
   }
+}
+
+function buildVisibleStatusColumns(
+  snapshot: BojUserSubmissionsSnapshot,
+): Array<{ key: string; label: string }> {
+  const visibleColumns: Array<{ key: string; label: string }> = [];
+
+  for (const column of snapshot.columns) {
+    if (!column.visible) {
+      continue;
+    }
+
+    visibleColumns.push({
+      key: column.key,
+      label: column.label,
+    });
+
+    if (column.key === "submissionId") {
+      visibleColumns.push({
+        key: "username",
+        label: "아이디",
+      });
+    }
+  }
+
+  return visibleColumns;
 }
 
 export class ProblemSubmissionsMenu extends PureComponent<{
@@ -153,7 +180,7 @@ class StatusRow extends PureComponent<{
       : `https://www.acmicpc.net/user/${encodeURIComponent(username)}`;
     const submissionUrl =
       options.problemNav && submissionId !== null
-        ? `${options.problemNav.submissionsUrl}/${submissionId}`
+        ? `/source/${submissionId}`
         : null;
     const problemUrl =
       options.problemNav && problemId === options.problemNav.problemId
@@ -194,7 +221,9 @@ class StatusRow extends PureComponent<{
         </td>
         <td className="memory">{formatValueWithUnit(memoryKb, "KB")}</td>
         <td className="time">{formatValueWithUnit(timeMs, "ms")}</td>
-        <td>{language}</td>
+        <td>
+          {submissionUrl ? <a href={submissionUrl}>{language}</a> : language}
+        </td>
         <td>{formatValueWithUnit(codeLength, "B")}</td>
         <td>
           <a

@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 import { PureComponent } from "react";
 
+import { highlightCodeBlock } from "./code-highlighting.js";
 import { ViewerDocument } from "./render.js";
 import { ProblemSubmissionsMenu, SubmissionsTopChrome, type ReactRenderSubmissionsStatusOptions } from "./submissions-components.js";
 import { formatValueWithUnit } from "./shared.js";
@@ -78,6 +79,53 @@ const PROBLEM_SUBMISSION_PAGE_STYLE = `
     display: inline-block;
     padding: 0 16px;
     white-space: pre;
+  }
+  .problem-submission-line-content.hljs {
+    background: transparent;
+    color: #24292f;
+  }
+  .problem-submission-line-content .hljs-comment,
+  .problem-submission-line-content .hljs-quote {
+    color: #6a737d;
+    font-style: italic;
+  }
+  .problem-submission-line-content .hljs-keyword,
+  .problem-submission-line-content .hljs-selector-tag,
+  .problem-submission-line-content .hljs-literal,
+  .problem-submission-line-content .hljs-section,
+  .problem-submission-line-content .hljs-link,
+  .problem-submission-line-content .hljs-selector-id {
+    color: #d73a49;
+  }
+  .problem-submission-line-content .hljs-string,
+  .problem-submission-line-content .hljs-title,
+  .problem-submission-line-content .hljs-built_in,
+  .problem-submission-line-content .hljs-type,
+  .problem-submission-line-content .hljs-attribute,
+  .problem-submission-line-content .hljs-symbol,
+  .problem-submission-line-content .hljs-bullet,
+  .problem-submission-line-content .hljs-addition {
+    color: #22863a;
+  }
+  .problem-submission-line-content .hljs-number,
+  .problem-submission-line-content .hljs-meta,
+  .problem-submission-line-content .hljs-regexp,
+  .problem-submission-line-content .hljs-variable,
+  .problem-submission-line-content .hljs-template-variable,
+  .problem-submission-line-content .hljs-selector-class {
+    color: #005cc5;
+  }
+  .problem-submission-line-content .hljs-function,
+  .problem-submission-line-content .hljs-function .hljs-title,
+  .problem-submission-line-content .hljs-title.function_,
+  .problem-submission-line-content .hljs-title.class_ {
+    color: #6f42c1;
+  }
+  .problem-submission-line-content .hljs-emphasis {
+    font-style: italic;
+  }
+  .problem-submission-line-content .hljs-strong {
+    font-weight: 700;
   }
   .problem-submission-empty {
     padding: 18px;
@@ -182,7 +230,7 @@ class ProblemSubmissionPageMarkup extends PureComponent<{
                     <a className="btn btn-default btn-sm" href={model.nextSubmissionUrl}>다음 제출 ▶</a>
                   ) : null}
                 </div>
-                <SubmissionCodeBlock code={model.code} />
+                <SubmissionCodeBlock code={model.code} language={model.language} />
               </div>
             </div>
           </div>
@@ -192,9 +240,10 @@ class ProblemSubmissionPageMarkup extends PureComponent<{
   }
 }
 
-class SubmissionCodeBlock extends PureComponent<{ code: string }> {
+class SubmissionCodeBlock extends PureComponent<{ code: string; language: string }> {
   public render(): JSX.Element {
-    const lines = this.props.code.replace(/\r\n/g, "\n").split("\n");
+    const highlighted = highlightCodeBlock(this.props.code, this.props.language);
+    const lines = highlighted.lines;
 
     if (lines.length === 0) {
       return <div className="problem-submission-empty">저장된 코드가 없습니다.</div>;
@@ -206,7 +255,10 @@ class SubmissionCodeBlock extends PureComponent<{ code: string }> {
           {lines.map((line, index) => (
             <div key={`line-${index + 1}`} className="problem-submission-line">
               <span className="problem-submission-line-number">{index + 1}</span>
-              <span className="problem-submission-line-content">{line || " "}</span>
+              <span
+                className="problem-submission-line-content hljs"
+                dangerouslySetInnerHTML={{ __html: line || " " }}
+              />
             </div>
           ))}
         </pre>

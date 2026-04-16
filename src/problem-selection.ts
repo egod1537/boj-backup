@@ -21,6 +21,7 @@ export function selectProblemsFromProfile(
   let problemIds = allowedProblemIds
     ? orderedProblemIds.filter((problemId) => allowedProblemIds.has(problemId))
     : [...orderedProblemIds];
+  problemIds.sort((left, right) => left - right);
 
   if (options.problemLimit !== undefined && options.problemLimit !== null) {
     problemIds = problemIds.slice(0, options.problemLimit);
@@ -31,14 +32,14 @@ export function selectProblemsFromProfile(
     summaryParts.push(`문제 번호 ${options.problemFilter.trim()}`);
   }
   if (options.problemLimit !== undefined && options.problemLimit !== null) {
-    summaryParts.push(`프로필 목록 순 ${options.problemLimit}문제`);
+    summaryParts.push(`문제 번호 오름차순 ${options.problemLimit}문제`);
   }
 
   return {
     problemIds,
     availableProblems,
     totalProblems: problemIds.length,
-    selectionSummary: summaryParts.length > 0 ? summaryParts.join(" · ") : "전체 문제",
+    selectionSummary: summaryParts.length > 0 ? summaryParts.join(" · ") : "문제 번호 오름차순 전체",
   };
 }
 

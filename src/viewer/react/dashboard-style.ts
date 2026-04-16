@@ -94,10 +94,132 @@ export const DASHBOARD_STYLE = `
     width: 34%;
     white-space: nowrap;
   }
-  .dashboard-artifact-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
+  .dashboard-pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .dashboard-pipeline-card {
+    border: 1px solid var(--boj-border);
+    border-left-width: 4px;
+    border-radius: 4px;
+    background: var(--boj-panel);
+    padding: 16px 18px;
+  }
+  .dashboard-pipeline-card.completed {
+    border-left-color: #5cb85c;
+    background: #fcfefb;
+  }
+  .dashboard-pipeline-card.active {
+    border-left-color: #337ab7;
+    background: #f7fbff;
+  }
+  .dashboard-pipeline-card.pending {
+    border-left-color: #bfbfbf;
+  }
+  .dashboard-pipeline-card.blocked {
+    border-left-color: #d6d6d6;
+    background: #fafafa;
+  }
+  .dashboard-pipeline-card.failed {
+    border-left-color: #d9534f;
+    background: #fff9f9;
+  }
+  .dashboard-pipeline-card.stopped {
+    border-left-color: #f0ad4e;
+    background: #fffdf7;
+  }
+  .dashboard-pipeline-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .dashboard-pipeline-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dashboard-pipeline-head h4 {
+    margin: 3px 0 0;
+    font-size: 18px;
+    color: var(--boj-text-main);
+  }
+  .dashboard-pipeline-step-label {
+    display: block;
+    font-size: 12px;
+    color: var(--boj-text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dashboard-pipeline-state {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .dashboard-pipeline-state.completed {
+    background: #dff0d8;
+    color: #3c763d;
+  }
+  .dashboard-pipeline-state.active {
+    background: #d9edf7;
+    color: #31708f;
+  }
+  .dashboard-pipeline-state.pending {
+    background: #f5f5f5;
+    color: #777;
+  }
+  .dashboard-pipeline-state.blocked {
+    background: #f5f5f5;
+    color: #999;
+  }
+  .dashboard-pipeline-state.failed {
+    background: #f2dede;
+    color: #a94442;
+  }
+  .dashboard-pipeline-state.stopped {
+    background: #fcf8e3;
+    color: #8a6d3b;
+  }
+  .dashboard-pipeline-value {
+    display: block;
+    margin: 12px 0 6px;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--boj-text-main);
+    line-height: 1.2;
+  }
+  .dashboard-pipeline-meta {
+    font-size: 12px;
+    color: var(--boj-text-muted);
+    word-break: break-word;
+  }
+  .dashboard-pipeline-toggle {
+    white-space: nowrap;
+  }
+  .dashboard-pipeline-expanded {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #ececec;
+  }
+  .dashboard-pipeline-connector {
+    position: relative;
+    width: 2px;
+    height: 26px;
+    margin: 2px 0 2px 22px;
+    background: #d9d9d9;
+  }
+  .dashboard-pipeline-connector::after {
+    content: "";
+    position: absolute;
+    left: -4px;
+    bottom: -1px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #d9d9d9;
   }
   .dashboard-resume-stack {
     display: grid;
@@ -202,63 +324,40 @@ export const DASHBOARD_STYLE = `
     color: var(--boj-text-muted);
     font-size: 12px;
   }
-  .dashboard-artifact-card {
-    border: 1px solid var(--boj-border);
-    border-top-width: 3px;
-    border-radius: 4px;
-    background: var(--boj-panel);
-    padding: 14px 16px;
-    min-height: 176px;
-  }
-  .dashboard-artifact-card.sync { border-top-color: #f0ad4e; }
-  .dashboard-artifact-card.profile { border-top-color: #5bc0de; }
-  .dashboard-artifact-card.submissions { border-top-color: #337ab7; }
-  .dashboard-artifact-card.problems { border-top-color: #5cb85c; }
-  .dashboard-artifact-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .dashboard-artifact-head h4 {
-    margin: 0;
-    font-size: 16px;
-    color: var(--boj-text-main);
-  }
-  .dashboard-artifact-flag {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: 700;
-  }
-  .dashboard-artifact-flag.ready {
-    background: #dff0d8;
-    color: #3c763d;
-  }
-  .dashboard-artifact-flag.empty {
-    background: #f5f5f5;
-    color: #777;
-  }
-  .dashboard-artifact-value {
-    display: block;
-    margin: 14px 0 6px;
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--boj-text-main);
-    line-height: 1.2;
-  }
-  .dashboard-artifact-meta {
-    min-height: 38px;
-    font-size: 12px;
-    color: var(--boj-text-muted);
-    word-break: break-word;
-  }
   .dashboard-link-row {
     margin-top: 12px;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+  }
+  .dashboard-stage-section,
+  .dashboard-stage-form {
+    margin-top: 12px;
+  }
+  .dashboard-stage-form .form-group {
+    margin-bottom: 14px;
+  }
+  .dashboard-stage-form label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--boj-text-subtle);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dashboard-stage-checkbox label {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    color: var(--boj-text-muted);
+  }
+  .dashboard-stage-help {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--boj-text-subtle);
   }
   .dashboard-btn-primary {
     background: #3498db;
@@ -289,6 +388,15 @@ export const DASHBOARD_STYLE = `
     margin: 12px 0 6px;
     font-size: 22px;
     color: var(--boj-text-main);
+  }
+  .dashboard-foldout-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .dashboard-foldout-toggle {
+    white-space: nowrap;
   }
   .dashboard-task-meta {
     margin-bottom: 12px;
@@ -537,12 +645,13 @@ export const DASHBOARD_STYLE = `
   }
   .dashboard-empty { color: var(--boj-text-subtle); font-style: italic; }
   @media (max-width: 767px) {
-    .dashboard-artifact-grid { grid-template-columns: 1fr; }
     .dashboard-resume-head { flex-direction: column; }
     .dashboard-nav-note { display: none; }
     .dashboard-task-controls { margin-top: 10px; }
     .dashboard-step { min-width: 100%; }
     .dashboard-step-connector { display: none; }
+    .dashboard-pipeline-head { flex-direction: column; align-items: flex-start; }
+    .dashboard-pipeline-head-actions { width: 100%; justify-content: space-between; }
     .dashboard-problem-progress-head { flex-direction: column; }
     .dashboard-problem-progress-grid { grid-template-columns: 1fr; }
     .dashboard-problem-progress-details { grid-template-columns: 1fr; }
