@@ -1,0 +1,30 @@
+node_modules/
+dist/
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+
+# Generated crawl artifacts
+data/
+problems/
+profile/
+tmp/
+
+# Checkpoints and local dashboard state
+.boj-checkpoint.json
+.boj-submissions.*.checkpoint.json
+*.checkpoint.json
+*.sync-checkpoint.json
+.dashboard-last-user.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini

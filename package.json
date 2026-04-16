@@ -1,0 +1,36 @@
+{
+  "name": "boj-backup",
+  "version": "1.0.0",
+  "description": "CLI for backing up BOJ submissions and problem statements",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "boj-backup": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-viewer-client.mjs",
+    "dev": "tsx src/index.ts",
+    "login": "tsx src/index.ts login"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "commander": "^14.0.3",
+    "dotenv": "^17.4.2",
+    "esbuild": "^0.28.0",
+    "got": "^15.0.2",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "sql.js": "^1.14.1",
+    "tough-cookie": "^6.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/sql.js": "^1.4.11",
+    "typescript": "^6.0.2"
+  }
+}
