@@ -33,6 +33,8 @@ BOJ_COOKIE=OnlineJudge=...
 BOJ_ID=
 BOJ_PW=
 BOJ_DELAY_MS=3000
+BOJ_TIMEOUT_MS=15000
+BOJ_TIMEOUT_MAX_MS=60000
 ```
 
 ### 가장 권장하는 방법
@@ -180,6 +182,7 @@ npx tsx src/index.ts archive --overwrite
 - `--problem-limit 20`: 이미 백업되지 않은 문제 기준으로 문제 번호 오름차순 20문제만 추가 백업
 - `--no-resume`: 기존 체크포인트 무시
 - `--overwrite`: 이미 저장된 문제도 다시 다운로드
+- 네트워크 타임아웃이나 일시적인 연결 오류가 나면 현재 체크포인트에서 자동 resume 를 시도합니다.
 
 ### 대시보드 실행
 
@@ -230,5 +233,6 @@ npx tsx src/index.ts tui
 
 - BOJ 요청은 기본적으로 `3초 ± 0.5초` 간격으로 직렬 처리합니다.
 - `403/429` 응답이 오면 백오프로 재시도합니다.
-- `archive` 는 체크포인트를 남기므로 중단 후 재개가 가능합니다.
+- 타임아웃은 기본 `15초` 에서 시작해 timeout 계열 실패가 나면 `30초 -> 60초` 식으로 2배씩 늘어나고, `BOJ_TIMEOUT_MAX_MS` 까지 유지합니다.
+- `archive` 와 `sync` 는 체크포인트를 남기며, 일시적인 네트워크 오류가 나면 자동으로 체크포인트에서 resume 를 시도합니다.
 - 고급 호환용 명령(`submissions`, `backup-problems`, `serve-profile`, `serve-submissions`, `languages`, `sync`)도 남아 있지만 기본 사용은 위 다섯 개 중심으로 보면 됩니다.

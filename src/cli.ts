@@ -24,8 +24,8 @@ import {
   type ProblemBackupResult,
 } from "./problem-backup.js";
 import {
-  runArchiveSync,
-  runBackupSync,
+  runArchiveSyncWithAutoResume,
+  runBackupSyncWithAutoResume,
   type BackupSyncStageProgress,
 } from "./sync.js";
 import { runSimpleTui } from "./tui.js";
@@ -104,7 +104,7 @@ export async function runCli(argv = process.argv): Promise<void> {
 
       let result;
       try {
-        result = await runBackupSync({
+        result = await runBackupSyncWithAutoResume({
           client,
           handle,
           resolveUsername: () => authenticateClient(client, config),
@@ -212,7 +212,7 @@ export async function runCli(argv = process.argv): Promise<void> {
 
       let result;
       try {
-        result = await runArchiveSync({
+        result = await runArchiveSyncWithAutoResume({
           client,
           handle: username,
           profilePath: options.profile ?? artifacts.profilePath,

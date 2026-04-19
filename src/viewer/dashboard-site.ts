@@ -26,8 +26,8 @@ import {
   formatSyncPhase,
   readSyncCheckpoint,
   resolveSyncCheckpointPath,
-  runArchiveSync,
-  runBackupSync,
+  runArchiveSyncWithAutoResume,
+  runBackupSyncWithAutoResume,
   type BackupSyncStageProgress,
 } from "../sync.js";
 import {
@@ -354,7 +354,7 @@ async function handleRequest(
         `이어받기: ${resume ? "on" : "off"}`,
       ]);
 
-      const result = await runBackupSync({
+      const result = await runBackupSyncWithAutoResume({
         client,
         handle,
         resolveUsername: () => authenticateClient(client, config),
@@ -629,7 +629,7 @@ async function handleRequest(
           `이어받기: ${resume ? "on" : "off"}`,
         ]);
 
-        const result = await runArchiveSync({
+        const result = await runArchiveSyncWithAutoResume({
           client,
           handle: targetHandle,
           profilePath,
@@ -2362,6 +2362,8 @@ function createClient(config: AppConfig, delaySeconds?: number): BojSessionClien
     requestDelayMs: delaySeconds ? Math.round(delaySeconds * 1000) : config.requestDelayMs,
     requestJitterMs: config.requestJitterMs,
     backoffScheduleMs: config.backoffScheduleMs,
+    requestTimeoutMs: config.requestTimeoutMs,
+    maxRequestTimeoutMs: config.maxRequestTimeoutMs,
   });
 }
 

@@ -2,7 +2,7 @@ import { load, type CheerioAPI } from "cheerio";
 import got, { type Got, type OptionsOfTextResponseBody, type Response } from "got";
 import { Cookie, CookieJar } from "tough-cookie";
 
-import { AuthenticationError, StopRequestedError } from "../errors.js";
+import { AuthenticationError, StopRequestedError, isTimeoutLikeError } from "../errors.js";
 
 export interface BojCredentials {
   userId: string;
@@ -201,6 +201,8 @@ export type BojRateLimitDelayReason = "none" | "base" | "backoff";
 export interface BojRateLimitSnapshot {
   requestDelayMs: number;
   jitterMs: number;
+  requestTimeoutMs: number;
+  maxRequestTimeoutMs: number;
   nextDelayMs: number;
   scheduledDelayMs: number;
   delayReason: BojRateLimitDelayReason;
@@ -237,6 +239,10 @@ export class BojSessionClient {
   private readonly requestDelayMs: number;
   private readonly requestJitterMs: number;
   private readonly backoffScheduleMs: number[];
+  private readonly baseRequestTimeoutMs: number;
+  private readonly maxRequestTimeoutMs: number;
+  private currentRequestTimeoutMs: number;
+  private currentSolvedAcRequestTimeoutMs: number;
   private nextRequestAt = 0;
   private nextSolvedAcRequestAt = 0;
   private scheduledDelayMs = 0;
@@ -250,12 +256,18 @@ export class BojSessionClient {
     requestDelayMs?: number;
     requestJitterMs?: number;
     backoffScheduleMs?: number[];
+    requestTimeoutMs?: number;
+    maxRequestTimeoutMs?: number;
   }) {
     this.baseUrl = args.baseUrl;
     this.credentials = args.credentials;
     this.requestDelayMs = Math.max(args.requestDelayMs ?? 3_000, 2_000);
     this.requestJitterMs = Math.max(args.requestJitterMs ?? 500, 0);
     this.backoffScheduleMs = args.backoffScheduleMs ?? [10_000, 30_000, 60_000];
+    this.baseRequestTimeoutMs = Math.max(args.requestTimeoutMs ?? 15_000, 5_000);
+    this.maxRequestTimeoutMs = Math.max(args.maxRequestTimeoutMs ?? 60_000, this.baseRequestTimeoutMs);
+    this.currentRequestTimeoutMs = this.baseRequestTimeoutMs;
+    this.currentSolvedAcRequestTimeoutMs = this.baseRequestTimeoutMs;
     this.cookieJar = new CookieJar();
     this.http = got.extend({
       prefixUrl: this.baseUrl,
@@ -264,7 +276,7 @@ export class BojSessionClient {
         "user-agent": args.userAgent,
       },
       timeout: {
-        request: 15_000,
+        request: this.baseRequestTimeoutMs,
       },
       retry: {
         limit: 0,
@@ -280,7 +292,7 @@ export class BojSessionClient {
         accept: "application/json",
       },
       timeout: {
-        request: 15_000,
+        request: this.baseRequestTimeoutMs,
       },
       retry: {
         limit: 0,
@@ -302,18 +314,23 @@ export class BojSessionClient {
       );
     }
 
-    const response = await this.http.post(normalizeGotPath(loginForm.action), {
-      form: {
-        ...loginForm.hiddenFields,
-        login_user_id: this.credentials.userId,
-        login_password: this.credentials.password,
-      },
-      headers: {
-        referer: new URL(`/login?next=${encodeURIComponent(nextPath)}`, this.baseUrl).toString(),
-      },
-      followRedirect: false,
-      throwHttpErrors: false,
-    });
+    const response = await this.executeWithAdaptiveTimeout("boj", (timeoutMs) =>
+      this.http.post(normalizeGotPath(loginForm.action), {
+        form: {
+          ...loginForm.hiddenFields,
+          login_user_id: this.credentials.userId,
+          login_password: this.credentials.password,
+        },
+        headers: {
+          referer: new URL(`/login?next=${encodeURIComponent(nextPath)}`, this.baseUrl).toString(),
+        },
+        timeout: {
+          request: timeoutMs,
+        },
+        followRedirect: false,
+        throwHttpErrors: false,
+      }),
+    );
 
     const redirectLocation = response.headers.location ?? "";
 
@@ -1147,6 +1164,8 @@ export class BojSessionClient {
     return {
       requestDelayMs: this.requestDelayMs,
       jitterMs: this.requestJitterMs,
+      requestTimeoutMs: this.currentRequestTimeoutMs,
+      maxRequestTimeoutMs: this.maxRequestTimeoutMs,
       nextDelayMs: Math.max(this.nextRequestAt - Date.now(), 0),
       scheduledDelayMs: this.scheduledDelayMs,
       delayReason: this.delayReason,
@@ -1155,11 +1174,16 @@ export class BojSessionClient {
   }
 
   private async fetchLoginForm(nextPath: string): Promise<LoginForm> {
-    const response = await this.http.get("login", {
-      searchParams: {
-        next: nextPath,
-      },
-    });
+    const response = await this.executeWithAdaptiveTimeout("boj", (timeoutMs) =>
+      this.http.get("login", {
+        searchParams: {
+          next: nextPath,
+        },
+        timeout: {
+          request: timeoutMs,
+        },
+      }),
+    );
 
     const $ = load(response.body);
     const form = $("#login_form");
@@ -1188,6 +1212,44 @@ export class BojSessionClient {
     };
   }
 
+  private async executeWithAdaptiveTimeout(
+    target: "boj" | "solvedAc",
+    request: (timeoutMs: number) => Promise<Response<string>>,
+  ): Promise<Response<string>> {
+    while (true) {
+      const timeoutMs =
+        target === "boj" ? this.currentRequestTimeoutMs : this.currentSolvedAcRequestTimeoutMs;
+
+      try {
+        return await request(timeoutMs);
+      } catch (error) {
+        if (!isTimeoutLikeError(error) || !this.increaseAdaptiveTimeout(target)) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private increaseAdaptiveTimeout(target: "boj" | "solvedAc"): boolean {
+    if (target === "boj") {
+      const nextTimeoutMs = Math.min(this.currentRequestTimeoutMs * 2, this.maxRequestTimeoutMs);
+      if (nextTimeoutMs <= this.currentRequestTimeoutMs) {
+        return false;
+      }
+
+      this.currentRequestTimeoutMs = nextTimeoutMs;
+      return true;
+    }
+
+    const nextTimeoutMs = Math.min(this.currentSolvedAcRequestTimeoutMs * 2, this.maxRequestTimeoutMs);
+    if (nextTimeoutMs <= this.currentSolvedAcRequestTimeoutMs) {
+      return false;
+    }
+
+    this.currentSolvedAcRequestTimeoutMs = nextTimeoutMs;
+    return true;
+  }
+
   private async getWithRateLimit(
     pathname: string,
     options: OptionsOfTextResponseBody = {},
@@ -1197,10 +1259,16 @@ export class BojSessionClient {
     while (true) {
       await this.waitForNextRequestWindow();
 
-      const response = await this.http.get(pathname, {
-        ...options,
-        throwHttpErrors: false,
-      });
+      const response = await this.executeWithAdaptiveTimeout("boj", (timeoutMs) =>
+        this.http.get(pathname, {
+          ...options,
+          timeout: {
+            ...(options.timeout ?? {}),
+            request: timeoutMs,
+          },
+          throwHttpErrors: false,
+        }),
+      );
       const isThrottled = response.statusCode === 403 || response.statusCode === 429;
 
       if (isThrottled && backoffAttempt < this.backoffScheduleMs.length) {
@@ -1237,10 +1305,16 @@ export class BojSessionClient {
         await sleep(waitMs);
       }
 
-      const response = await this.solvedAcHttp.get(pathname, {
-        ...options,
-        throwHttpErrors: false,
-      });
+      const response = await this.executeWithAdaptiveTimeout("solvedAc", (timeoutMs) =>
+        this.solvedAcHttp.get(pathname, {
+          ...options,
+          timeout: {
+            ...(options.timeout ?? {}),
+            request: timeoutMs,
+          },
+          throwHttpErrors: false,
+        }),
+      );
       const isThrottled = response.statusCode === 403 || response.statusCode === 429;
 
       if (isThrottled && backoffAttempt < this.backoffScheduleMs.length) {

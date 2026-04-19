@@ -27,6 +27,8 @@ export function createClient(
     requestDelayMs: delaySeconds ? Math.round(delaySeconds * 1000) : config.requestDelayMs,
     requestJitterMs: config.requestJitterMs,
     backoffScheduleMs: config.backoffScheduleMs,
+    requestTimeoutMs: config.requestTimeoutMs,
+    maxRequestTimeoutMs: config.maxRequestTimeoutMs,
   });
 }
 

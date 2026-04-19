@@ -9,7 +9,7 @@ import {
   type BojUserSubmissionsCheckpoint,
   type BojUserSubmissionsSnapshot,
 } from "./boj/session.js";
-import { ConfigurationError, StopRequestedError } from "./errors.js";
+import { ConfigurationError, StopRequestedError, isRetryableNetworkError } from "./errors.js";
 import {
   backupProblemsFromSubmissions,
   backupProblemFromRows,
@@ -106,6 +106,20 @@ export interface RunArchiveSyncArgs {
   onLog?: (message: string) => void;
   onSubmissionsProgress?: (progress: BojUserSubmissionFetchProgress) => void;
   onProblemProgress?: (progress: ProblemBackupProgress) => void;
+}
+
+const MAX_AUTOMATIC_RESUME_ATTEMPTS = 5;
+
+export async function runBackupSyncWithAutoResume(
+  args: RunBackupSyncArgs,
+): Promise<BackupSyncResult> {
+  return runWithAutomaticResume("전체 동기화", args, runBackupSync);
+}
+
+export async function runArchiveSyncWithAutoResume(
+  args: RunArchiveSyncArgs,
+): Promise<BackupSyncResult> {
+  return runWithAutomaticResume("문제 아카이브", args, runArchiveSync);
 }
 
 export async function runBackupSync(args: RunBackupSyncArgs): Promise<BackupSyncResult> {
@@ -674,6 +688,65 @@ export async function runArchiveSync(args: RunArchiveSyncArgs): Promise<BackupSy
     submissions: submissionsSnapshot,
     problems: problemResult,
   };
+}
+
+async function runWithAutomaticResume<
+  TArgs extends {
+    resume?: boolean;
+    shouldStop?: () => boolean;
+    onLog?: (message: string) => void;
+  },
+>(
+  label: string,
+  args: TArgs,
+  runner: (args: TArgs) => Promise<BackupSyncResult>,
+): Promise<BackupSyncResult> {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await runner(args);
+    } catch (error) {
+      if (
+        args.resume === false ||
+        attempt >= MAX_AUTOMATIC_RESUME_ATTEMPTS ||
+        args.shouldStop?.() ||
+        !isRetryableNetworkError(error)
+      ) {
+        throw error;
+      }
+
+      attempt += 1;
+      args.onLog?.(
+        `${label} 일시 실패: ${formatAutomaticResumeError(error)}. 체크포인트에서 자동 resume ${attempt}/${MAX_AUTOMATIC_RESUME_ATTEMPTS}`,
+      );
+    }
+  }
+}
+
+function formatAutomaticResumeError(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "알 수 없는 네트워크 오류";
+  }
+
+  const candidate = error as { message?: unknown; code?: unknown; name?: unknown };
+  const message = typeof candidate.message === "string" ? candidate.message.trim() : "";
+  const code = typeof candidate.code === "string" ? candidate.code : null;
+  const name = typeof candidate.name === "string" ? candidate.name : null;
+
+  if (message && code) {
+    return `${message} (${code})`;
+  }
+
+  if (message) {
+    return message;
+  }
+
+  if (code && name) {
+    return `${name} (${code})`;
+  }
+
+  return name ?? "네트워크 오류";
 }
 
 function throwIfStopRequested(shouldStop?: (() => boolean) | undefined): void {

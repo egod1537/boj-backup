@@ -5,7 +5,7 @@ import type { BojUserSubmissionFetchProgress } from "./boj/session.js";
 import type { ProblemBackupProgress } from "./problem-backup.js";
 import { loadConfig } from "./config.js";
 import { ConfigurationError } from "./errors.js";
-import { runArchiveSync, type BackupSyncStageProgress } from "./sync.js";
+import { runArchiveSyncWithAutoResume, type BackupSyncStageProgress } from "./sync.js";
 import {
   createClient,
   createInterruptController,
@@ -102,7 +102,7 @@ async function runArchiveMenuAction(): Promise<void> {
   );
 
   try {
-    const result = await runArchiveSync({
+    const result = await runArchiveSyncWithAutoResume({
       client,
       handle: username,
       profilePath: artifacts.profilePath,

@@ -12,6 +12,8 @@ export interface AppConfig {
   requestDelayMs: number;
   requestJitterMs: number;
   backoffScheduleMs: number[];
+  requestTimeoutMs: number;
+  maxRequestTimeoutMs: number;
 }
 
 let envLoaded = false;
@@ -25,10 +27,20 @@ export function loadConfig(cwd = process.cwd()): AppConfig {
   const bojId = process.env.BOJ_ID?.trim() || undefined;
   const bojPassword = process.env.BOJ_PW?.trim() || undefined;
   const bojCookie = process.env.BOJ_COOKIE?.trim() || undefined;
-  const requestDelayMs = parseOptionalPositiveInt(process.env.BOJ_DELAY_MS) ?? 3_000;
+  const requestDelayMs = parseOptionalPositiveInt(process.env.BOJ_DELAY_MS, 2_000, "BOJ_DELAY_MS") ?? 3_000;
+  const requestTimeoutMs =
+    parseOptionalPositiveInt(process.env.BOJ_TIMEOUT_MS, 5_000, "BOJ_TIMEOUT_MS") ?? 15_000;
+  const maxRequestTimeoutMs =
+    parseOptionalPositiveInt(process.env.BOJ_TIMEOUT_MAX_MS, requestTimeoutMs, "BOJ_TIMEOUT_MAX_MS") ?? 60_000;
 
   if ((bojId && !bojPassword) || (!bojId && bojPassword)) {
     throw new ConfigurationError("BOJ_ID and BOJ_PW must both be set together.");
+  }
+
+  if (maxRequestTimeoutMs < requestTimeoutMs) {
+    throw new ConfigurationError(
+      `BOJ_TIMEOUT_MAX_MS must be ${requestTimeoutMs} or greater, received ${maxRequestTimeoutMs}.`,
+    );
   }
 
   return {
@@ -40,17 +52,23 @@ export function loadConfig(cwd = process.cwd()): AppConfig {
     requestDelayMs,
     requestJitterMs: 500,
     backoffScheduleMs: [10_000, 30_000, 60_000],
+    requestTimeoutMs,
+    maxRequestTimeoutMs,
   };
 }
 
-function parseOptionalPositiveInt(value: string | undefined): number | null {
+function parseOptionalPositiveInt(
+  value: string | undefined,
+  minValue: number,
+  label: string,
+): number | null {
   if (!value) {
     return null;
   }
 
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 2_000) {
-    throw new ConfigurationError(`Invalid BOJ_DELAY_MS: ${value}. Use 2000 or greater.`);
+  if (!Number.isInteger(parsed) || parsed < minValue) {
+    throw new ConfigurationError(`Invalid ${label}: ${value}. Use ${minValue} or greater.`);
   }
 
   return parsed;
